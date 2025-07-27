@@ -158,26 +158,43 @@ python main.py query "Show me all suspicious network connections" --mode hybrid
 
 ```
 xplainable-pcap-analyzer-lightrag/
-├── main.py                    # Main application entry point
-├── requirements.txt           # Python dependencies
-├── docker-compose.yml         # Docker configuration
-├── Dockerfile                 # Docker image definition
-├── .env.example              # Environment variables template
-├── .gitignore                # Git ignore rules
+├── main.py                           # Main application entry point
+├── requirements.txt                  # Python dependencies
+├── docker-compose.yml                # Docker configuration
+├── Dockerfile                        # Docker image definition
+├── .env.example                     # Environment variables template
+├── .gitignore                       # Git ignore rules
+├── LICENSE                          # MIT License file
+├── ENHANCEMENT_SUMMARY.md           # Project enhancement documentation
 ├── config/
-│   └── config.yaml           # Application configuration
+│   └── config.yaml                  # Application configuration
 ├── src/
-│   ├── pcap_processor.py     # Enhanced PCAP processing
-│   ├── security_analyzer.py  # Advanced security analysis
-│   ├── knowledge_graph.py    # LightRAG + Neo4j integration
-│   ├── visualization.py      # Interactive visualizations
-│   └── web_interface.py      # Streamlit web interface
+│   ├── pcap_processor.py            # Enhanced PCAP processing
+│   ├── security_analyzer.py         # Advanced security analysis
+│   ├── knowledge_graph.py           # LightRAG + Neo4j integration
+│   ├── enhanced_knowledge_graph.py  # Advanced knowledge graph features
+│   ├── enhanced_payload_analyzer.py # Deep packet payload analysis
+│   ├── iso27001_compliance_analyzer.py # ISO 27001 compliance checking
+│   ├── jina_reranker.py            # Jina AI reranking for better results
+│   ├── visualization.py             # Interactive visualizations
+│   ├── neo4j_html_visualizer.py    # Neo4j graph HTML visualization
+│   ├── neo4j_html_visualizer_fixed.py # Improved Neo4j visualizer
+│   ├── simple_html_template.py     # HTML template utilities
+│   └── web_interface.py            # Streamlit web interface
 ├── data/
-│   └── pcaps/               # PCAP files storage
+│   ├── pcaps/                      # PCAP files storage
+│   ├── neo4j account graph.png     # Sample Neo4j visualization
+│   └── newplot.png                 # Sample analysis plot
 ├── output/
-│   ├── reports/             # Analysis reports
-│   ├── graphs/              # Knowledge graphs
-│   └── visualizations/      # Charts and plots
+│   ├── reports/                    # Analysis reports
+│   ├── graphs/                     # Knowledge graphs
+│   └── visualizations/             # Charts and plots
+├── example/
+│   ├── insert_pydantic_docs.py    # Example Pydantic integration
+│   ├── rag_agent.py               # Example RAG agent implementation
+│   ├── requirements.txt           # Example dependencies
+│   ├── streamlit_app.py           # Example Streamlit application
+│   └── super-basic-lightrag.py    # Basic LightRAG example
 └── README.md
 ```
 
