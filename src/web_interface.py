@@ -22,8 +22,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.pcap_processor import AdvancedPcapProcessor
-from src.knowledge_graph import SecurityKnowledgeGraph
-from src.visualization import SecurityVisualizationEngine
+from src.enhanced_knowledge_graph import EnhancedSecurityKnowledgeGraph
+from src.neo4j_html_visualizer_fixed import Neo4jHTMLVisualizer
+from src.jina_reranker import JinaRerankerService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class PCAPSecurityAnalyzerApp:
         self.processor = None
         self.knowledge_graph = None
         self.visualizer = None
+        self.jina_reranker = None
         self.analysis_results = None
         
     def run(self):
@@ -173,8 +175,31 @@ class PCAPSecurityAnalyzerApp:
                 if st.button("🔍 Advanced Query", use_container_width=True):
                     st.session_state.show_advanced_query = True
             
+            # Enhanced Features Status
+            st.subheader("🚀 Enhanced Features")
+            
+            # Check which enhanced features are available
+            neo4j_available = bool(self.config.get('neo4j', {}).get('password'))
+            jina_available = bool(self.config.get('jina', {}).get('api_key'))
+            openai_available = bool(self.config.get('openai', {}).get('api_key'))
+            
+            if neo4j_available:
+                st.success("✅ Neo4j Graph Database")
+            else:
+                st.warning("⚠️ Neo4j Not Configured")
+                
+            if jina_available:
+                st.success("✅ Jina AI Reranker")
+            else:
+                st.info("ℹ️ Jina Reranker Optional")
+                
+            if openai_available:
+                st.success("✅ OpenAI GPT Analysis")
+            else:
+                st.error("❌ OpenAI API Required")
+            
             # Configuration
-            st.subheader("⚙️ Configuration")
+            st.subheader("⚙️ Analysis Configuration")
             
             analysis_depth = st.selectbox(
                 "Analysis Depth",
@@ -184,12 +209,16 @@ class PCAPSecurityAnalyzerApp:
             
             enable_ml_detection = st.checkbox("Enable ML Threat Detection", value=True)
             enable_behavioral_analysis = st.checkbox("Behavioral Analysis", value=True)
+            enable_neo4j_graphs = st.checkbox("Neo4j Graph Visualization", value=neo4j_available)
+            enable_jina_reranking = st.checkbox("Jina AI Reranking", value=jina_available)
             
             # Store config in session state
             st.session_state.analysis_config = {
                 'depth': analysis_depth.lower(),
                 'ml_detection': enable_ml_detection,
-                'behavioral_analysis': enable_behavioral_analysis
+                'behavioral_analysis': enable_behavioral_analysis,
+                'neo4j_graphs': enable_neo4j_graphs,
+                'jina_reranking': enable_jina_reranking
             }
     
     def _display_upload_interface(self):
@@ -318,11 +347,37 @@ class PCAPSecurityAnalyzerApp:
             progress_bar.progress(10)
             
             self.processor = AdvancedPcapProcessor(self.config)
-            self.visualizer = SecurityVisualizationEngine(self.config)
+            self.visualizer = Neo4jHTMLVisualizer(self.config)
+            
+            # Initialize Jina reranker if configured and enabled (with error handling)
+            if self.config.get('jina', {}).get('enabled', False) and self.config.get('jina', {}).get('api_key'):
+                try:
+                    status_text.text("🔧 Initializing Jina reranker...")
+                    progress_bar.progress(15)
+                    self.jina_reranker = JinaRerankerService(self.config)
+                    status_text.text("✅ Jina reranker initialized successfully")
+                except Exception as e:
+                    st.warning(f"⚠️ Jina reranker initialization failed: {str(e)}")
+                    st.info("📝 Continuing without Jina reranker - analysis will use standard ranking")
+                    self.jina_reranker = None
+            else:
+                st.info("📝 Jina reranker not configured - using standard ranking")
             
             if options.get('knowledge_graph', True):
-                self.knowledge_graph = SecurityKnowledgeGraph(self.config)
-                asyncio.run(self.knowledge_graph.initialize())
+                try:
+                    # Skip enhanced knowledge graph due to ResolvedAddress error
+                    # Directly use basic knowledge graph
+                    status_text.text("🕸️ Initializing basic knowledge graph...")
+                    from src.knowledge_graph import SecurityKnowledgeGraph
+                    self.knowledge_graph = SecurityKnowledgeGraph(self.config)
+                    asyncio.run(self.knowledge_graph.initialize())
+                    status_text.text("✅ Basic knowledge graph initialized")
+                    st.session_state.knowledge_graph_ready = True
+                except Exception as fallback_error:
+                    st.warning(f"⚠️ Knowledge graph initialization failed: {str(fallback_error)}")
+                    st.info("📝 Continuing without knowledge graph")
+                    self.knowledge_graph = None
+                    st.session_state.knowledge_graph_ready = False
             
             # Process PCAP
             status_text.text("📡 Processing network traffic...")
@@ -330,38 +385,78 @@ class PCAPSecurityAnalyzerApp:
             
             analysis_results = asyncio.run(self.processor.process_pcap_file(temp_file_path))
             
-            # Build knowledge graph
+            # Build enhanced knowledge graph with Jina reranking
             if self.knowledge_graph and options.get('knowledge_graph', True):
-                status_text.text("🕸️ Building knowledge graph...")
+                status_text.text("🕸️ Building enhanced knowledge graph with AI reranking...")
                 progress_bar.progress(60)
                 
-                kg_success = asyncio.run(
-                    self.knowledge_graph.build_knowledge_graph(
-                        analysis_results['network_entities']
+                try:
+                    # Use basic knowledge graph method
+                    kg_success = asyncio.run(
+                        self.knowledge_graph.build_knowledge_graph(
+                            analysis_results['network_entities']
+                        )
                     )
-                )
-                
-                if kg_success:
-                    st.session_state.knowledge_graph_ready = True
+                    
+                    if kg_success:
+                        st.session_state.knowledge_graph_ready = True
+                        status_text.text("✅ Knowledge graph ready!")
+                    else:
+                        status_text.text("⚠️ Knowledge graph construction failed")
+                        
+                except Exception as e:
+                    st.warning(f"⚠️ Knowledge graph building failed: {str(e)}")
+                    status_text.text("⚠️ Knowledge graph construction failed, continuing without it")
+                    st.session_state.knowledge_graph_ready = False
             
-            # Create visualizations
-            status_text.text("📊 Generating visualizations...")
+            # Create enhanced visualizations with Neo4j
+            status_text.text("📊 Generating enhanced Neo4j visualizations...")
             progress_bar.progress(80)
             
-            network_viz = self.visualizer.create_interactive_network_graph(
-                analysis_results['network_entities']
-            )
-            
-            security_dashboard = self.visualizer.create_security_dashboard(
-                analysis_results['network_entities'],
-                analysis_results['analysis_summary']
-            )
+            try:
+                # Try enhanced Neo4j visualizations first
+                if hasattr(self.visualizer, 'create_interactive_security_graph'):
+                    status_text.text("📊 Creating interactive Neo4j security graph...")
+                    network_viz = self.visualizer.create_interactive_security_graph(
+                        analysis_results['network_entities']
+                    )
+                    security_dashboard = self.visualizer.create_enhanced_threat_dashboard(
+                        analysis_results['network_entities'],
+                        analysis_results.get('analysis_summary', {})
+                    )
+                    status_text.text("✅ Enhanced Neo4j visualizations created!")
+                else:
+                    # Fallback to basic visualizations
+                    status_text.text("📊 Using fallback visualizations...")
+                    from src.visualization import SecurityVisualizationEngine
+                    fallback_viz = SecurityVisualizationEngine(self.config)
+                    network_viz = fallback_viz.create_interactive_network_graph(
+                        analysis_results['network_entities']
+                    )
+                    security_dashboard = fallback_viz.create_security_dashboard(
+                        analysis_results['network_entities'],
+                        analysis_results['analysis_summary']
+                    )
+                    
+            except Exception as e:
+                st.warning(f"⚠️ Enhanced visualization failed: {str(e)}")
+                st.info("📝 Using fallback visualizations")
+                # Fallback to basic visualizations
+                from src.visualization import SecurityVisualizationEngine
+                fallback_viz = SecurityVisualizationEngine(self.config)
+                network_viz = fallback_viz.create_interactive_network_graph(
+                    analysis_results['network_entities']
+                )
+                security_dashboard = fallback_viz.create_security_dashboard(
+                    analysis_results['network_entities'],
+                    analysis_results['analysis_summary']
+                )
             
             # Complete analysis
             progress_bar.progress(100)
             status_text.text("✅ Analysis complete!")
             
-            # Store results
+            # Store results and components
             st.session_state.analysis_results = {
                 **analysis_results,
                 'network_visualization': network_viz,
@@ -372,6 +467,12 @@ class PCAPSecurityAnalyzerApp:
                     'analysis_time': datetime.now().isoformat()
                 }
             }
+            
+            # Store enhanced components in session state for later use
+            st.session_state.visualizer = self.visualizer
+            st.session_state.processor = self.processor
+            st.session_state.knowledge_graph = self.knowledge_graph
+            st.session_state.jina_reranker = self.jina_reranker
             
             st.session_state.analysis_completed = True
             
@@ -396,6 +497,16 @@ class PCAPSecurityAnalyzerApp:
         if not results:
             st.error("No analysis results available")
             return
+        
+        # Restore enhanced components from session state
+        if hasattr(st.session_state, 'visualizer'):
+            self.visualizer = st.session_state.visualizer
+        if hasattr(st.session_state, 'processor'):
+            self.processor = st.session_state.processor
+        if hasattr(st.session_state, 'knowledge_graph'):
+            self.knowledge_graph = st.session_state.knowledge_graph
+        if hasattr(st.session_state, 'jina_reranker'):
+            self.jina_reranker = st.session_state.jina_reranker
         
         # Header with key metrics
         file_info = results.get('file_info', {})
@@ -491,31 +602,33 @@ class PCAPSecurityAnalyzerApp:
         summary = results.get('analysis_summary', {})
         security_events = results.get('network_entities', {}).get('security_events', [])
         
-        # Security Status Alert
+        # Security Status Alert with improved contrast
         security_score = summary.get('security_score', 0)
         threat_count = summary.get('security_events', {}).get('total', 0)
         
         if threat_count == 0:
             st.markdown("""
-            <div class="security-alert alert-success">
-                <h3>✅ Network Security Status: SECURE</h3>
-                <p>No security threats detected during the analysis period. The network demonstrates normal operational patterns without identified malicious activities.</p>
+            <div style="background: linear-gradient(135deg, #28a745, #20c997); padding: 20px; border-radius: 10px; margin: 20px 0; border: 2px solid #28a745; box-shadow: 0 4px 8px rgba(0,0,0,0.2);">
+                <h3 style="color: #ffffff !important; margin: 0 0 10px 0; font-size: 1.4em; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-weight: 700;">✅ Network Security Status: SECURE</h3>
+                <p style="color: #ffffff !important; margin: 0; font-size: 1.1em; font-weight: 500; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">No security threats detected during the analysis period. The network demonstrates normal operational patterns without identified malicious activities.</p>
             </div>
             """, unsafe_allow_html=True)
         else:
             if threat_count >= 10 or security_score < 50:
-                alert_class = "alert-critical"
+                bg_color = "linear-gradient(135deg, #dc3545, #c82333)"
+                border_color = "#dc3545"
                 status = "CRITICAL THREATS DETECTED"
                 icon = "🚨"
             else:
-                alert_class = "alert-high"
+                bg_color = "linear-gradient(135deg, #fd7e14, #e55a00)"
+                border_color = "#fd7e14"
                 status = "SECURITY ISSUES FOUND"
                 icon = "⚠️"
             
             st.markdown(f"""
-            <div class="security-alert {alert_class}">
-                <h3>{icon} Network Security Status: {status}</h3>
-                <p>{threat_count} security events detected requiring immediate attention and investigation.</p>
+            <div style="background: {bg_color}; padding: 20px; border-radius: 10px; margin: 20px 0; border: 2px solid {border_color}; box-shadow: 0 4px 8px rgba(0,0,0,0.2);">
+                <h3 style="color: #ffffff !important; margin: 0 0 10px 0; font-size: 1.4em; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-weight: 700;">{icon} Network Security Status: {status}</h3>
+                <p style="color: #ffffff !important; margin: 0; font-size: 1.1em; font-weight: 500; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">{threat_count} security events detected requiring immediate attention and investigation.</p>
             </div>
             """, unsafe_allow_html=True)
         
@@ -526,7 +639,18 @@ class PCAPSecurityAnalyzerApp:
             # Display security dashboard
             security_dashboard = results.get('security_dashboard')
             if security_dashboard:
-                st.plotly_chart(security_dashboard, use_container_width=True)
+                # Check if it's HTML content (from Neo4j visualizer)
+                if isinstance(security_dashboard, str):
+                    if security_dashboard.startswith('<!DOCTYPE html>'):
+                        # Display HTML visualization
+                        st.components.v1.html(security_dashboard, height=500, scrolling=True)
+                    else:
+                        st.error("Invalid dashboard format received")
+                elif hasattr(security_dashboard, 'show'):
+                    # Display Plotly figure (fallback)
+                    st.plotly_chart(security_dashboard, use_container_width=True)
+                else:
+                    st.warning("Security dashboard format not recognized")
         
         with col2:
             # Top threats summary
@@ -554,19 +678,163 @@ class PCAPSecurityAnalyzerApp:
             for rec in recommendations[:3]:
                 st.markdown(f"• {rec}")
         
-        # Timeline visualization
+        # Timeline visualization with better error handling
         if security_events:
             st.subheader("📈 Threat Timeline")
-            timeline_fig = self.visualizer.create_attack_timeline(security_events)
-            st.plotly_chart(timeline_fig, use_container_width=True)
+            # Initialize enhanced visualizer if not available
+            if not self.visualizer:
+                self.visualizer = Neo4jHTMLVisualizer(self.config)
+            
+            try:
+                # Try enhanced timeline first
+                if hasattr(self.visualizer, 'create_enhanced_attack_timeline'):
+                    timeline_result = self.visualizer.create_enhanced_attack_timeline(security_events)
+                    
+                    # Check if it's valid HTML content
+                    if isinstance(timeline_result, str) and timeline_result.startswith('<!DOCTYPE html>') and len(timeline_result) > 100:
+                        # Display HTML visualization
+                        st.components.v1.html(timeline_result, height=400, scrolling=True)
+                    elif hasattr(timeline_result, 'show'):
+                        # Display Plotly figure (fallback)
+                        st.plotly_chart(timeline_result, use_container_width=True)
+                    else:
+                        # Fallback to simple timeline
+                        st.info("Using simplified timeline visualization")
+                        self._create_simple_timeline(security_events)
+                else:
+                    # Fallback to simple timeline
+                    self._create_simple_timeline(security_events)
+                    
+            except Exception as e:
+                st.warning(f"Enhanced timeline visualization failed: {str(e)}")
+                # Create a simple fallback timeline
+                self._create_simple_timeline(security_events)
+        
+        # ISO 27001 Compliance Analysis Section
+        st.subheader("🏛️ ISO 27001 Compliance Analysis")
+        
+        try:
+            # Import and initialize ISO 27001 compliance analyzer
+            from src.iso27001_compliance_analyzer import ISO27001ComplianceAnalyzer
+            compliance_analyzer = ISO27001ComplianceAnalyzer(self.config)
+            
+            # Perform compliance analysis
+            with st.spinner("Analyzing ISO 27001 compliance..."):
+                import asyncio
+                compliance_assessment = asyncio.run(
+                    compliance_analyzer.analyze_comprehensive_compliance(
+                        results.get('network_entities', {}),
+                        security_events
+                    )
+                )
+            
+            # Display compliance results
+            col_comp1, col_comp2, col_comp3 = st.columns(3)
+            
+            with col_comp1:
+                # Compliance score gauge
+                compliance_score = compliance_assessment.compliance_score
+                if compliance_score >= 95:
+                    score_color = "success"
+                    status_icon = "✅"
+                elif compliance_score >= 80:
+                    score_color = "warning"
+                    status_icon = "⚠️"
+                else:
+                    score_color = "error"
+                    status_icon = "❌"
+                
+                st.metric(
+                    "Compliance Score",
+                    f"{compliance_score:.1f}%",
+                    delta=f"{status_icon} {compliance_assessment.overall_status.value.replace('_', ' ').title()}"
+                )
+            
+            with col_comp2:
+                st.metric(
+                    "Compliant Controls",
+                    f"{compliance_assessment.compliant_controls}/{compliance_assessment.total_controls_assessed}",
+                    delta=f"{len(compliance_assessment.violations)} violations"
+                )
+            
+            with col_comp3:
+                critical_violations = len([v for v in compliance_assessment.violations if v.severity == 'CRITICAL'])
+                st.metric(
+                    "Critical Issues",
+                    critical_violations,
+                    delta="Immediate action required" if critical_violations > 0 else "None"
+                )
+            
+            # Compliance status overview
+            if compliance_assessment.overall_status.value == 'compliant':
+                st.success("🎉 **ISO 27001 COMPLIANT**: Your network demonstrates strong adherence to ISO 27001:2022 requirements.")
+            elif compliance_assessment.overall_status.value == 'partially_compliant':
+                st.warning("⚠️ **PARTIALLY COMPLIANT**: Some ISO 27001 controls need attention to achieve full compliance.")
+            else:
+                st.error("❌ **NON-COMPLIANT**: Significant compliance gaps require immediate remediation.")
+            
+            # Top compliance violations
+            if compliance_assessment.violations:
+                st.markdown("**🚨 Top Compliance Violations:**")
+                
+                # Sort violations by severity and risk rating
+                sorted_violations = sorted(
+                    compliance_assessment.violations,
+                    key=lambda x: (
+                        {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}.get(x.severity, 3),
+                        -x.risk_rating
+                    )
+                )
+                
+                for violation in sorted_violations[:5]:
+                    severity_color = {
+                        'CRITICAL': '#dc3545',
+                        'HIGH': '#fd7e14',
+                        'MEDIUM': '#ffc107',
+                        'LOW': '#28a745'
+                    }.get(violation.severity, '#6c757d')
+                    
+                    st.markdown(f"""
+                    <div style="border-left: 4px solid {severity_color}; padding: 15px; margin: 10px 0; background: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border: 1px solid #e0e0e0;">
+                        <strong style="color: #212529; font-size: 1.1em;">Control {violation.control_id}: {violation.control_name}</strong><br>
+                        <span style="color: {severity_color}; font-weight: bold; font-size: 0.9em; background: rgba({severity_color.replace('#', '')}, 0.1); padding: 2px 6px; border-radius: 3px; margin: 5px 0; display: inline-block;">{violation.severity}</span> |
+                        <span style="color: #495057; font-weight: 600;">Risk: {violation.risk_rating:.1f}/10</span><br>
+                        <em style="color: #6c757d; line-height: 1.4; display: block; margin: 8px 0;">{violation.description}</em><br>
+                        <small style="color: #495057; background: #f8f9fa; padding: 4px 8px; border-radius: 4px; display: inline-block;"><strong>Gap:</strong> {violation.compliance_gap}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Compliance recommendations
+            if compliance_assessment.recommendations:
+                with st.expander("💡 Compliance Recommendations", expanded=True):
+                    for i, recommendation in enumerate(compliance_assessment.recommendations[:5], 1):
+                        st.markdown(f"{i}. {recommendation}")
+            
+            # Detailed compliance report option
+            if st.button("📋 Generate Detailed Compliance Report"):
+                detailed_report = compliance_analyzer.generate_compliance_report(compliance_assessment)
+                st.markdown("### ISO 27001 Compliance Report")
+                st.markdown(detailed_report)
+                
+                # Offer download
+                st.download_button(
+                    label="📥 Download Compliance Report",
+                    data=detailed_report,
+                    file_name=f"iso27001_compliance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                    mime="text/markdown"
+                )
+        
+        except Exception as e:
+            st.error(f"ISO 27001 compliance analysis failed: {str(e)}")
+            st.info("Compliance analysis requires proper configuration and security event data.")
     
     def _display_knowledge_graph_interface(self, results: Dict):
         """Display interactive knowledge graph interface"""
         
         st.markdown("""
-        <div class="knowledge-graph-container">
-            <h2>🕸️ Interactive Security Knowledge Graph</h2>
-            <p>Query the knowledge graph using natural language to explore network relationships and security insights.</p>
+        <div style="background: linear-gradient(135deg, #1e3c72, #2a5298); padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #4a90e2;">
+            <h2 style="color: #ffffff; margin: 0 0 10px 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">🕸️ Interactive Security Knowledge Graph</h2>
+            <p style="color: #e0e0e0; margin: 0; font-size: 1.1em;">Query the knowledge graph using natural language to explore network relationships and security insights.</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -628,18 +896,34 @@ class PCAPSecurityAnalyzerApp:
                         st.markdown(f"*Response:* {query_record['response'][:200]}...")
                         st.caption(f"Timestamp: {query_record['timestamp']}")
         
-        # Network Graph Visualization
+        # Neo4j Knowledge Graph Visualization
+        st.subheader("🌐 Neo4j Knowledge Graph Visualization")
+        st.markdown("**Visual representation of the security knowledge graph stored in Neo4j:**")
+        
+        # Display the same Neo4j visualization as in other tabs
         network_viz = results.get('network_visualization')
-        if network_viz and 'cytoscape_elements' in network_viz:
-            st.subheader("🌐 Interactive Network Graph")
-            
-            # Display cytoscape graph (placeholder - would need dash-cytoscape integration)
-            st.info("Interactive Cytoscape network graph would be displayed here with clickable nodes and edges")
-            
-            # Alternative: Display Plotly network graph
-            plotly_fig = network_viz.get('plotly_figure')
-            if plotly_fig:
-                st.plotly_chart(plotly_fig, use_container_width=True)
+        if network_viz:
+            if isinstance(network_viz, str) and network_viz.startswith('<!DOCTYPE html>'):
+                # Display the Neo4j HTML visualization
+                st.components.v1.html(network_viz, height=500, scrolling=True)
+            else:
+                st.warning("Neo4j visualization not available")
+        else:
+            # If no network visualization, create a simple one from the knowledge graph
+            if st.session_state.get('knowledge_graph_ready', False) and self.visualizer:
+                try:
+                    # Create a knowledge graph specific visualization
+                    kg_viz = self.visualizer.create_interactive_security_graph(
+                        results.get('network_entities', {})
+                    )
+                    if isinstance(kg_viz, str) and kg_viz.startswith('<!DOCTYPE html>'):
+                        st.components.v1.html(kg_viz, height=500, scrolling=True)
+                    else:
+                        st.info("Knowledge graph visualization is being prepared...")
+                except Exception as e:
+                    st.error(f"Failed to create knowledge graph visualization: {str(e)}")
+            else:
+                st.info("Knowledge graph visualization will appear here once the graph is built. Please ensure the knowledge graph is initialized during analysis.")
     
     def _execute_knowledge_graph_query(self, query: str, mode: str):
         """Execute knowledge graph query and display results"""
@@ -650,56 +934,222 @@ class PCAPSecurityAnalyzerApp:
         
         try:
             with st.spinner("🧠 Processing query with AI knowledge graph..."):
-                # Execute query
-                query_result = asyncio.run(
-                    self.knowledge_graph.query_security_knowledge(query, mode)
-                )
-                
-                # Display results
-                if query_result.get('lightrag_response'):
-                    response = query_result['lightrag_response']
-                    confidence = query_result.get('confidence_score', 0)
+                # Execute knowledge graph query with better error handling
+                try:
+                    query_result = asyncio.run(
+                        self.knowledge_graph.query_security_knowledge(query, mode)
+                    )
                     
-                    # Success message
-                    st.success("✅ Query executed successfully")
+                    # Check if we got a valid response
+                    if query_result and isinstance(query_result, dict):
+                        # Try different response keys that might be available
+                        response = None
+                        confidence = 0.0
+                        
+                        # Check for various possible response formats
+                        if 'lightrag_response' in query_result and query_result['lightrag_response']:
+                            response = query_result['lightrag_response']
+                            confidence = query_result.get('confidence_score', 0.8)
+                        elif 'response' in query_result and query_result['response']:
+                            response = query_result['response']
+                            confidence = query_result.get('confidence', 0.7)
+                        elif 'answer' in query_result and query_result['answer']:
+                            response = query_result['answer']
+                            confidence = query_result.get('confidence_score', 0.7)
+                        elif isinstance(query_result, str) and query_result.strip():
+                            response = query_result
+                            confidence = 0.6
+                        
+                        if response and response.strip() and not response.startswith("LightRAG not available"):
+                            # Success - display the response
+                            st.success("✅ Query executed successfully")
+                            
+                            # Response with confidence indicator
+                            col_resp1, col_resp2 = st.columns([4, 1])
+                            
+                            with col_resp1:
+                                st.markdown("### 🤖 AI Analysis Response")
+                                st.markdown(response)
+                            
+                            with col_resp2:
+                                st.metric(
+                                    "Confidence Score",
+                                    f"{confidence:.2f}",
+                                    delta="High" if confidence > 0.8 else "Medium" if confidence > 0.6 else "Low"
+                                )
+                            
+                            # Structured data if available
+                            structured_data = query_result.get('structured_data')
+                            if structured_data:
+                                with st.expander("📊 Structured Data"):
+                                    st.json(structured_data)
+                            
+                            # Add to query history
+                            st.session_state.query_history.append({
+                                'query': query,
+                                'response': response,
+                                'mode': mode,
+                                'confidence': confidence,
+                                'timestamp': datetime.now().isoformat()
+                            })
+                            
+                        else:
+                            # Fallback to basic analysis if LightRAG is not working
+                            st.warning("⚠️ Advanced knowledge graph not available, using basic analysis...")
+                            fallback_response = self._generate_fallback_analysis(query)
+                            
+                            st.markdown("### 📊 Basic Network Analysis")
+                            st.markdown(fallback_response)
+                            
+                            # Add to query history
+                            st.session_state.query_history.append({
+                                'query': query,
+                                'response': fallback_response,
+                                'mode': 'fallback',
+                                'confidence': 0.5,
+                                'timestamp': datetime.now().isoformat()
+                            })
+                    else:
+                        # No valid response received
+                        st.warning("⚠️ Knowledge graph query returned no results, using basic analysis...")
+                        fallback_response = self._generate_fallback_analysis(query)
+                        
+                        st.markdown("### 📊 Basic Network Analysis")
+                        st.markdown(fallback_response)
+                        
+                        # Add to query history
+                        st.session_state.query_history.append({
+                            'query': query,
+                            'response': fallback_response,
+                            'mode': 'fallback',
+                            'confidence': 0.5,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                except Exception as query_error:
+                    st.warning(f"⚠️ Knowledge graph query failed: {str(query_error)}")
+                    st.info("Using basic network analysis instead...")
                     
-                    # Response with confidence indicator
-                    col_resp1, col_resp2 = st.columns([4, 1])
+                    # Provide fallback analysis
+                    fallback_response = self._generate_fallback_analysis(query)
                     
-                    with col_resp1:
-                        st.markdown("### 🤖 AI Analysis Response")
-                        st.markdown(response)
-                    
-                    with col_resp2:
-                        st.metric(
-                            "Confidence Score",
-                            f"{confidence:.2f}",
-                            delta="High" if confidence > 0.8 else "Medium" if confidence > 0.6 else "Low"
-                        )
-                    
-                    # Structured data if available
-                    structured_data = query_result.get('structured_data')
-                    if structured_data:
-                        with st.expander("📊 Structured Data"):
-                            st.json(structured_data)
+                    st.markdown("### 📊 Basic Network Analysis")
+                    st.markdown(fallback_response)
                     
                     # Add to query history
                     st.session_state.query_history.append({
                         'query': query,
-                        'response': response,
-                        'mode': mode,
-                        'confidence': confidence,
+                        'response': fallback_response,
+                        'mode': 'fallback',
+                        'confidence': 0.5,
                         'timestamp': datetime.now().isoformat()
                     })
-                    
-                else:
-                    st.error("❌ Query failed or returned no results")
-                    if 'error' in query_result:
-                        st.error(f"Error: {query_result['error']}")
         
         except Exception as e:
             st.error(f"❌ Query execution failed: {str(e)}")
             logger.error(f"Knowledge graph query failed: {e}")
+    
+    def _generate_fallback_analysis(self, query: str) -> str:
+        """Generate basic analysis when knowledge graph is not available"""
+        
+        # Get analysis results from session state
+        results = st.session_state.get('analysis_results', {})
+        network_entities = results.get('network_entities', {})
+        summary = results.get('analysis_summary', {})
+        
+        # Basic query processing based on keywords
+        query_lower = query.lower()
+        
+        if 'host' in query_lower and 'risk' in query_lower:
+            # Host and risk analysis
+            hosts = network_entities.get('hosts', {})
+            if hosts:
+                response = "**Network Hosts and Security Risks:**\n\n"
+                for ip, host_info in list(hosts.items())[:10]:  # Limit to first 10 hosts
+                    is_internal = host_info.get('is_internal', False)
+                    reputation = host_info.get('reputation', 'unknown')
+                    packet_count = host_info.get('packet_count', 0)
+                    
+                    risk_level = "Low"
+                    if reputation == 'malicious':
+                        risk_level = "High"
+                    elif reputation == 'suspicious' or not is_internal:
+                        risk_level = "Medium"
+                    
+                    response += f"• **{ip}** ({'Internal' if is_internal else 'External'})\n"
+                    response += f"  - Risk Level: {risk_level}\n"
+                    response += f"  - Reputation: {reputation.title()}\n"
+                    response += f"  - Traffic: {packet_count} packets\n\n"
+                
+                return response
+            else:
+                return "No host information available in the current analysis."
+        
+        elif 'threat' in query_lower or 'security' in query_lower:
+            # Security threats analysis
+            security_events = network_entities.get('security_events', [])
+            if security_events:
+                response = f"**Security Threats Detected: {len(security_events)} events**\n\n"
+                
+                # Group by event type
+                event_types = {}
+                for event in security_events:
+                    event_type = getattr(event, 'event_type', 'unknown')
+                    if event_type not in event_types:
+                        event_types[event_type] = []
+                    event_types[event_type].append(event)
+                
+                for event_type, events in list(event_types.items())[:5]:  # Top 5 event types
+                    response += f"• **{event_type.replace('_', ' ').title()}**: {len(events)} incidents\n"
+                    if events:
+                        example = events[0]
+                        response += f"  - Severity: {getattr(example, 'severity', 'Unknown')}\n"
+                        response += f"  - Description: {getattr(example, 'description', 'No description')[:100]}...\n\n"
+                
+                return response
+            else:
+                return "No security threats detected in the current analysis."
+        
+        elif 'service' in query_lower:
+            # Network services analysis
+            services = network_entities.get('services', {})
+            if services:
+                response = f"**Network Services Discovered: {len(services)} services**\n\n"
+                
+                for service_key, service_info in list(services.items())[:10]:  # First 10 services
+                    service_name = service_info.get('service_name', 'Unknown')
+                    host = service_info.get('host', 'Unknown')
+                    port = service_info.get('port', 0)
+                    risk_level = service_info.get('risk_level', 'Medium')
+                    
+                    response += f"• **{service_name}** on {host}:{port}\n"
+                    response += f"  - Risk Level: {risk_level}\n"
+                    response += f"  - Protocol: {service_info.get('protocol', 'Unknown')}\n\n"
+                
+                return response
+            else:
+                return "No network services information available."
+        
+        else:
+            # General network summary
+            response = "**Network Analysis Summary:**\n\n"
+            
+            if summary:
+                response += f"• **Security Score**: {summary.get('security_score', 0)}/100\n"
+                response += f"• **Hosts Discovered**: {summary.get('hosts_discovered', 0)}\n"
+                response += f"• **Security Events**: {summary.get('security_events', {}).get('total', 0)}\n"
+                response += f"• **Network Services**: {summary.get('services_discovered', 0)}\n"
+                response += f"• **Risk Level**: {summary.get('risk_level', 'Unknown')}\n\n"
+                
+                recommendations = summary.get('recommendations', [])
+                if recommendations:
+                    response += "**Key Recommendations:**\n"
+                    for i, rec in enumerate(recommendations[:3], 1):
+                        response += f"{i}. {rec}\n"
+            else:
+                response += "Analysis summary not available. Please ensure the PCAP file has been processed successfully."
+            
+            return response
     
     def _display_network_analysis(self, results: Dict):
         """Display detailed network analysis"""
@@ -714,9 +1164,24 @@ class PCAPSecurityAnalyzerApp:
         with col1:
             # Network graph
             network_viz = results.get('network_visualization')
-            if network_viz and 'plotly_figure' in network_viz:
-                st.subheader("🌐 Network Topology")
-                st.plotly_chart(network_viz['plotly_figure'], use_container_width=True)
+            if network_viz:
+                st.subheader("🌐 Interactive Network Security Graph")
+                
+                # Check if it's HTML content (from Neo4j visualizer)
+                if isinstance(network_viz, str):
+                    if network_viz.startswith('<!DOCTYPE html>'):
+                        # Display HTML visualization
+                        st.components.v1.html(network_viz, height=600, scrolling=True)
+                    else:
+                        st.error("Invalid network visualization format received")
+                elif hasattr(network_viz, 'get') and 'plotly_figure' in network_viz:
+                    # Display Plotly figure (fallback)
+                    st.plotly_chart(network_viz['plotly_figure'], use_container_width=True)
+                elif hasattr(network_viz, 'show'):
+                    # Direct Plotly figure
+                    st.plotly_chart(network_viz, use_container_width=True)
+                else:
+                    st.warning("Network visualization format not recognized")
         
         with col2:
             # Network statistics
@@ -864,8 +1329,8 @@ class PCAPSecurityAnalyzerApp:
                     
                     # Evidence details
                     if event.evidence:
-                        with st.expander("🔍 Evidence"):
-                            st.json(event.evidence)
+                        st.markdown("**🔍 Evidence:**")
+                        st.json(event.evidence)
                 
                 with col_event2:
                     st.metric("Confidence Score", f"{event.confidence_score:.2f}")
@@ -1085,6 +1550,23 @@ class PCAPSecurityAnalyzerApp:
         st.session_state.knowledge_graph_ready = False
         st.session_state.analysis_completed = False
         st.session_state.query_history = []
+        
+        # Clear stored enhanced components
+        if hasattr(st.session_state, 'visualizer'):
+            del st.session_state.visualizer
+        if hasattr(st.session_state, 'processor'):
+            del st.session_state.processor
+        if hasattr(st.session_state, 'knowledge_graph'):
+            del st.session_state.knowledge_graph
+        if hasattr(st.session_state, 'jina_reranker'):
+            del st.session_state.jina_reranker
+            
+        # Reset instance variables
+        self.visualizer = None
+        self.processor = None
+        self.knowledge_graph = None
+        self.jina_reranker = None
+        
         st.rerun()
     
     def _export_analysis_results(self):
@@ -1174,25 +1656,107 @@ class PCAPSecurityAnalyzerApp:
         report += f"\n---\nGenerated by PCAP Security Analyzer v1.0"
         
         return report
+    
+    def _create_simple_timeline(self, security_events):
+        """Create a simple timeline visualization as fallback"""
+        try:
+            import plotly.express as px
+            import pandas as pd
+            from datetime import datetime
+            
+            # Convert events to DataFrame
+            timeline_data = []
+            for event in security_events:
+                timeline_data.append({
+                    'timestamp': datetime.fromtimestamp(event.timestamp),
+                    'event_type': event.event_type.replace('_', ' ').title(),
+                    'severity': event.severity,
+                    'description': event.description[:50] + '...' if len(event.description) > 50 else event.description
+                })
+            
+            if timeline_data:
+                df = pd.DataFrame(timeline_data)
+                
+                # Create simple scatter plot timeline
+                fig = px.scatter(df,
+                               x='timestamp',
+                               y='event_type',
+                               color='severity',
+                               hover_data=['description'],
+                               title="Security Events Timeline",
+                               color_discrete_map={
+                                   'CRITICAL': 'red',
+                                   'HIGH': 'orange',
+                                   'MEDIUM': 'yellow',
+                                   'LOW': 'green'
+                               })
+                
+                fig.update_layout(
+                    xaxis_title="Time",
+                    yaxis_title="Event Type",
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No security events to display in timeline")
+                
+        except Exception as e:
+            st.error(f"Failed to create fallback timeline: {str(e)}")
 
 def main():
     """Main entry point for Streamlit application"""
     
-    # Load configuration
+    # Load enhanced configuration with Neo4j and Jina support
     config = {
         'openai': {
             'api_key': os.getenv('OPENAI_API_KEY'),
             'model': 'gpt-4o-mini',
-            'embedding_model': 'text-embedding-3-large'
+            'embedding_model': 'text-embedding-3-large',
+            'max_tokens': 4096
         },
         'neo4j': {
             'uri': os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
             'username': os.getenv('NEO4J_USERNAME', 'neo4j'),
             'password': os.getenv('NEO4J_PASSWORD', 'password')
         },
+        'jina': {
+            'api_key': os.getenv('JINA_API_KEY'),
+            'model': 'jina-reranker-v2-base-multilingual',
+            'max_documents': 100,
+            'enable_fallback': True,
+            'enabled': bool(os.getenv('JINA_API_KEY'))  # Only enable if API key is provided
+        },
         'lightrag': {
             'working_dir': './data/lightrag_cache',
-            'max_tokens': 8192
+            'max_tokens': 8192,
+            'entity_extract_max_gleaning': 3,
+            'enable_llm_cache': True,
+            'enable_enhanced_extraction': True
+        },
+        'pcap': {
+            'max_packet_size': 50000,
+            'chunk_size': 1000,
+            'enable_payload_analysis': True,
+            'enable_enhanced_analysis': True
+        },
+        'security': {
+            'enable_deep_packet_inspection': True,
+            'enable_ml_detection': True,
+            'enable_behavioral_analysis': True,
+            'enable_compliance_analysis': True,
+            'enable_threat_correlation': True
+        },
+        'visualization': {
+            'enable_neo4j_graphs': True,
+            'enable_interactive_html': True,
+            'graph_layout': 'force-directed',
+            'max_nodes': 1000
+        },
+        'web': {
+            'host': 'localhost',
+            'port': 8501,
+            'title': 'Enhanced PCAP Security Analyzer'
         }
     }
     

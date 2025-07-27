@@ -10,6 +10,7 @@ from datetime import datetime
 from neo4j import GraphDatabase
 import networkx as nx
 from dataclasses import asdict
+from .simple_html_template import SIMPLE_HTML_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,23 @@ class Neo4jHTMLVisualizer:
         neo4j_config = self.config.get('neo4j', {})
         
         try:
-            self.neo4j_driver = GraphDatabase.driver(
-                neo4j_config.get('uri', 'bolt://localhost:7687'),
-                auth=(
-                    neo4j_config.get('username', 'neo4j'),
-                    neo4j_config.get('password', 'password')
+            uri = neo4j_config.get('uri', 'bolt://localhost:7687')
+            username = neo4j_config.get('username', 'neo4j')
+            password = neo4j_config.get('password', 'password')
+            
+            logger.info(f"Connecting to Neo4j at {uri} with user {username}")
+            
+            # For neo4j+s:// URI, encryption is built-in, no need for extra params
+            if uri.startswith('neo4j+s://') or uri.startswith('bolt+s://'):
+                self.neo4j_driver = GraphDatabase.driver(uri, auth=(username, password))
+            else:
+                # For regular bolt:// connections, use encryption settings
+                self.neo4j_driver = GraphDatabase.driver(
+                    uri,
+                    auth=(username, password),
+                    encrypted=True,
+                    trust='TRUST_ALL_CERTIFICATES'
                 )
-            )
             
             # Test connection
             with self.neo4j_driver.session() as session:
@@ -64,7 +75,7 @@ class Neo4jHTMLVisualizer:
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
-        body {
+        body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
             padding: 20px;
@@ -604,8 +615,7 @@ class Neo4jHTMLVisualizer:
             '''
         }
     
-    def create_interactive_security_graph(self, network_entities: Dict[str, Any], 
-                                        analysis_summary: Dict[str, Any]) -> str:
+    def create_interactive_security_graph(self, network_entities: Dict[str, Any]) -> str:
         """Create interactive HTML security graph visualization"""
         
         logger.info("Creating interactive HTML security graph...")
@@ -629,12 +639,16 @@ class Neo4jHTMLVisualizer:
                 threat_alerts=threat_alerts
             )
             
-            logger.info("Interactive HTML security graph created successfully")
+            logger.info(f"Interactive HTML security graph created successfully, length: {len(html_content)}")
+            logger.info(f"HTML content starts with: {html_content[:100]}...")
             return html_content
             
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
             logger.error(f"Failed to create interactive security graph: {e}")
-            return self._create_error_visualization(str(e))
+            logger.error(f"Full traceback: {error_details}")
+            return self._create_error_visualization(f"Error: {str(e)}\n\nTraceback:\n{error_details}")
     
     def _extract_neo4j_graph_data(self, network_entities: Dict[str, Any]) -> Dict[str, Any]:
         """Extract graph data from Neo4j or network entities"""
@@ -873,6 +887,93 @@ class Neo4jHTMLVisualizer:
 </body>
 </html>
         '''
+    
+    def create_enhanced_threat_dashboard(self, network_entities: Dict[str, Any],
+                                       analysis_summary: Dict[str, Any]) -> str:
+        """Create enhanced threat dashboard visualization"""
+        
+        logger.info("Creating enhanced threat dashboard...")
+        
+        try:
+            # For now, return the same interactive security graph
+            # This could be enhanced with specific dashboard elements
+            result = self.create_interactive_security_graph(network_entities)
+            logger.info(f"Enhanced threat dashboard created, type: {type(result)}, length: {len(result) if isinstance(result, str) else 'N/A'}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to create enhanced threat dashboard: {e}")
+            return self._create_error_visualization(str(e))
+    
+    def create_enhanced_attack_timeline(self, security_events: List) -> str:
+        """Create enhanced attack timeline visualization"""
+        
+        logger.info("Creating enhanced attack timeline...")
+        
+        try:
+            # Create a timeline-focused HTML visualization
+            timeline_data = []
+            for i, event in enumerate(security_events):
+                timeline_data.append({
+                    'id': i,
+                    'timestamp': event.timestamp,
+                    'event_type': event.event_type,
+                    'severity': event.severity,
+                    'description': event.description,
+                    'source_ip': getattr(event, 'source_ip', None),
+                    'dest_ip': getattr(event, 'dest_ip', None)
+                })
+            
+            # Generate timeline HTML (simplified version)
+            timeline_html = f'''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Security Timeline</title>
+                <script src="https://d3js.org/d3.v7.min.js"></script>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                    .timeline {{ background: #f5f5f5; padding: 20px; border-radius: 10px; }}
+                    .event {{ margin: 10px 0; padding: 10px; border-radius: 5px; }}
+                    .critical {{ background: #ffebee; border-left: 4px solid #f44336; }}
+                    .high {{ background: #fff3e0; border-left: 4px solid #ff9800; }}
+                    .medium {{ background: #f3e5f5; border-left: 4px solid #9c27b0; }}
+                    .low {{ background: #e8f5e8; border-left: 4px solid #4caf50; }}
+                </style>
+            </head>
+            <body>
+                <h1>🕐 Security Events Timeline</h1>
+                <div class="timeline">
+                    {self._generate_timeline_events(timeline_data)}
+                </div>
+            </body>
+            </html>
+            '''
+            
+            return timeline_html
+            
+        except Exception as e:
+            logger.error(f"Failed to create enhanced attack timeline: {e}")
+            return self._create_error_visualization(str(e))
+    
+    def _generate_timeline_events(self, timeline_data: List[Dict]) -> str:
+        """Generate HTML for timeline events"""
+        
+        events_html = ""
+        for event in sorted(timeline_data, key=lambda x: x['timestamp'], reverse=True):
+            severity_class = event['severity'].lower()
+            timestamp_str = datetime.fromtimestamp(event['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+            
+            events_html += f'''
+            <div class="event {severity_class}">
+                <strong>{event['event_type'].replace('_', ' ').title()}</strong> - {event['severity']}
+                <br><small>{timestamp_str}</small>
+                <br>{event['description']}
+                {f"<br><small>Source: {event['source_ip']} → Target: {event['dest_ip']}</small>" if event['source_ip'] else ""}
+            </div>
+            '''
+        
+        return events_html
     
     def export_html_visualization(self, html_content: str, output_path: str) -> str:
         """Export HTML visualization to file"""
