@@ -235,16 +235,6 @@ pip install pre-commit
 pre-commit install
 ```
 
-### Running Tests
-
-```bash
-# Run unit tests
-python -m pytest tests/
-
-# Run with coverage
-python -m pytest tests/ --cov=src/
-```
-
 ## 📊 Example Analysis Results
 
 ### Security Dashboard
@@ -262,16 +252,6 @@ python -m pytest tests/ --cov=src/
 "Map the network topology and trust relationships"
 ```
 
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -287,7 +267,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Issues**: [GitHub Issues](https://github.com/abyasham/xplainable-pcap-analyzer-lightrag/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/abyasham/xplainable-pcap-analyzer-lightrag/discussions)
-- **Email**: [your-email@example.com](mailto:your-email@example.com)
+- **Email**: [abyasham](mailto:abyasham@gmail.com)
 
 ## 🔮 Roadmap
 
@@ -300,4 +280,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Made with ❤️ for the cybersecurity community**
+**Made for the cybersecurity community**
