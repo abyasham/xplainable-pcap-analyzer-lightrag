@@ -8,10 +8,17 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.l2 import Ether, ARP
 from scapy.layers.dns import DNS, DNSQR, DNSRR
 from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
-from scapy.layers.tls import TLS
+# TLS import - handle missing TLS class in some Scapy versions
+try:
+    from scapy.layers.tls import TLS
+except ImportError:
+    # Define a dummy TLS class for compatibility
+    class TLS:
+        pass
 import asyncio
 import hashlib
 import json
+import math
 import re
 import math
 from datetime import datetime
@@ -59,6 +66,7 @@ class AdvancedPcapProcessor:
             'security_events': [],
             'dns_records': {},
             'arp_table': {},
+            'tcp_sessions': {},
             'tls_sessions': {},
             'http_sessions': {},
             'tcp_sessions': {},
@@ -1496,3 +1504,211 @@ class AdvancedPcapProcessor:
         ])
         
         return recommendations
+    
+    # Missing methods that are called but not implemented
+    async def _analyze_udp_layer(self, packet, timestamp: float):
+        """Analyze UDP layer"""
+        udp = packet[UDP]
+        ip = packet[IP]
+        
+        src_port = udp.sport
+        dst_port = udp.dport
+        
+        # Service identification
+        service_info = self._identify_service(dst_port, 'udp')
+        
+        # Update host statistics
+        host_src = self.network_entities['hosts'][ip.src]
+        host_dst = self.network_entities['hosts'][ip.dst]
+        
+        host_src['protocols'].add('UDP')
+        host_dst['protocols'].add('UDP')
+        
+        # Record connection
+        connection = {
+            'timestamp': timestamp,
+            'source_ip': ip.src,
+            'dest_ip': ip.dst,
+            'source_port': src_port,
+            'dest_port': dst_port,
+            'protocol': 'UDP',
+            'packet_size': len(packet),
+            'connection_type': 'udp_communication'
+        }
+        
+        self.network_entities['connections'].append(connection)
+    
+    async def _analyze_arp_layer(self, packet, timestamp: float):
+        """Analyze ARP layer"""
+        arp = packet[ARP]
+        
+        # Store ARP information
+        arp_record = {
+            'timestamp': timestamp,
+            'operation': arp.op,  # 1 = request, 2 = reply
+            'sender_ip': arp.psrc,
+            'sender_mac': arp.hwsrc,
+            'target_ip': arp.pdst,
+            'target_mac': arp.hwdst
+        }
+        
+        arp_key = f"{arp.psrc}_{arp.hwsrc}"
+        self.network_entities['arp_table'][arp_key] = arp_record
+        
+        # Detect ARP poisoning
+        await self._detect_arp_poisoning(arp_record)
+    
+    async def _detect_arp_poisoning(self, arp_record: Dict):
+        """Detect ARP poisoning attempts"""
+        sender_ip = arp_record['sender_ip']
+        sender_mac = arp_record['sender_mac']
+        
+        # Check for MAC-IP conflicts
+        for existing_key, existing_record in self.network_entities['arp_table'].items():
+            if (existing_record['sender_ip'] == sender_ip and
+                existing_record['sender_mac'] != sender_mac):
+                
+                await self._create_security_event(
+                    event_type="arp_poisoning_attempt",
+                    severity="HIGH",
+                    source_ip=sender_ip,
+                    description=f"ARP poisoning detected: IP {sender_ip} associated with multiple MACs",
+                    evidence={
+                        'original_mac': existing_record['sender_mac'],
+                        'new_mac': sender_mac,
+                        'timestamp': arp_record['timestamp']
+                    },
+                    timestamp=arp_record['timestamp'],
+                    attack_category="NETWORK_ATTACK"
+                )
+    
+    async def _detect_data_exfiltration(self):
+        """Detect potential data exfiltration"""
+        # Analyze large outbound transfers
+        outbound_transfers = defaultdict(int)
+        
+        for connection in self.network_entities['connections']:
+            src_ip = connection['source_ip']
+            dst_ip = connection['dest_ip']
+            packet_size = connection.get('packet_size', 0)
+            
+            # Check if source is internal and destination is external
+            if (self._is_internal_ip(src_ip) and not self._is_internal_ip(dst_ip)):
+                transfer_key = f"{src_ip}->{dst_ip}"
+                outbound_transfers[transfer_key] += packet_size
+        
+        # Flag large transfers
+        for transfer_key, total_bytes in outbound_transfers.items():
+            if total_bytes > 50_000_000:  # 50MB threshold
+                src_ip, dst_ip = transfer_key.split('->')
+                
+                await self._create_security_event(
+                    event_type="data_exfiltration_attempt",
+                    severity="HIGH",
+                    source_ip=src_ip,
+                    dest_ip=dst_ip,
+                    description=f"Large data transfer detected: {total_bytes:,} bytes",
+                    evidence={
+                        'bytes_transferred': total_bytes,
+                        'transfer_direction': 'outbound'
+                    },
+                    attack_category="DATA_EXFILTRATION",
+                    confidence_score=0.7
+                )
+    
+    async def _analyze_communication_patterns(self):
+        """Analyze communication patterns for anomalies"""
+        # Analyze traffic flows
+        flow_stats = defaultdict(lambda: {'packet_count': 0, 'byte_count': 0})
+        
+        for connection in self.network_entities['connections']:
+            flow_key = f"{connection['source_ip']}->{connection['dest_ip']}"
+            flow_stats[flow_key]['packet_count'] += 1
+            flow_stats[flow_key]['byte_count'] += connection.get('packet_size', 0)
+        
+        # Detect unusual traffic patterns
+        for flow_key, stats in flow_stats.items():
+            if stats['byte_count'] > 100_000_000:  # >100MB
+                source_ip, dest_ip = flow_key.split('->')
+                await self._create_security_event(
+                    event_type="large_data_transfer",
+                    severity="MEDIUM",
+                    source_ip=source_ip,
+                    dest_ip=dest_ip,
+                    description=f"Large data transfer detected: {stats['byte_count']:,} bytes",
+                    evidence={'byte_count': stats['byte_count'], 'packet_count': stats['packet_count']},
+                    attack_category="DATA_EXFILTRATION"
+                )
+    
+    async def _analyze_protocol_anomalies(self):
+        """Analyze protocol usage for anomalies"""
+        # This is a placeholder for protocol anomaly detection
+        pass
+    
+    async def _detect_lateral_movement(self):
+        """Detect lateral movement patterns"""
+        # Track internal-to-internal communications
+        internal_comms = []
+        
+        for connection in self.network_entities['connections']:
+            src_ip = connection['source_ip']
+            dst_ip = connection['dest_ip']
+            
+            if self._is_internal_ip(src_ip) and self._is_internal_ip(dst_ip):
+                internal_comms.append(connection)
+        
+        # Analyze for suspicious patterns (placeholder)
+        if len(internal_comms) > 1000:  # High internal activity
+            await self._create_security_event(
+                event_type="high_internal_activity",
+                severity="MEDIUM",
+                description=f"High internal network activity detected: {len(internal_comms)} connections",
+                evidence={'internal_connections': len(internal_comms)},
+                attack_category="LATERAL_MOVEMENT"
+            )
+    
+    async def _statistical_anomaly_detection(self):
+        """Perform statistical anomaly detection"""
+        # This is a placeholder for statistical analysis
+        pass
+    
+    async def _analyze_tcp_payload(self, payload: bytes, session: Dict, timestamp: float):
+        """Analyze TCP payload for threats"""
+        if not payload:
+            return
+        
+        payload_str = payload.decode('utf-8', errors='ignore')
+        
+        # Store payload sample
+        if len(session['payload_data']) < 10:  # Keep first 10 payload samples
+            session['payload_data'].append({
+                'timestamp': timestamp,
+                'size': len(payload),
+                'sample': payload_str[:200]  # First 200 chars
+            })
+        
+        # Basic payload analysis for suspicious content
+        suspicious_patterns = [
+            b'cmd.exe', b'powershell', b'/bin/sh', b'wget', b'curl',
+            b'SELECT * FROM', b'UNION SELECT', b'DROP TABLE'
+        ]
+        
+        for pattern in suspicious_patterns:
+            if pattern in payload:
+                await self._create_security_event(
+                    event_type="suspicious_payload",
+                    severity="MEDIUM",
+                    source_ip=session['source_ip'],
+                    dest_ip=session['dest_ip'],
+                    source_port=session['source_port'],
+                    dest_port=session['dest_port'],
+                    description=f"Suspicious payload pattern detected: {pattern.decode()}",
+                    evidence={'pattern': pattern.decode(), 'payload_sample': payload_str[:100]},
+                    timestamp=timestamp,
+                    attack_category="PAYLOAD_ANALYSIS"
+                )
+    
+    async def _detect_threats_in_packet(self, packet, timestamp: float):
+        """Real-time threat detection in individual packets"""
+        # This is a placeholder for real-time threat detection
+        pass

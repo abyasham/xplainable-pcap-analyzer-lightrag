@@ -7,12 +7,19 @@ import asyncio
 import logging
 import os
 import sys
-import yaml
 import argparse
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
 import subprocess
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not available, continue without it
+    pass
 
 # Import application components
 from src.pcap_processor import AdvancedPcapProcessor
@@ -21,7 +28,7 @@ from src.neo4j_html_visualizer import Neo4jHTMLVisualizer
 from src.jina_reranker import JinaRerankerService
 from src.web_interface import main as run_web_interface
 
-# Configure logging
+# Configure logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -32,6 +39,19 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Import yaml with error handling
+try:
+    import yaml
+except ImportError:
+    logger.error("PyYAML not available. Please install with: pip install pyyaml")
+    sys.exit(1)
+
+# Import application components
+from src.pcap_processor import AdvancedPcapProcessor
+from src.knowledge_graph import SecurityKnowledgeGraph
+from src.visualization import SecurityVisualizationEngine
+from src.web_interface import main as run_web_interface
 
 class PCAPSecurityAnalyzer:
     """Main PCAP Security Analyzer Application"""

@@ -159,13 +159,13 @@ class SecurityVisualizationEngine:
             rows=3, cols=3,
             subplot_titles=[
                 'Security Events Timeline', 'Threat Distribution', 'Host Risk Assessment',
-                'Protocol Security Analysis', 'Service Vulnerability Matrix', 'Attack Vector Analysis',  
-                'Network Traffic Patterns', 'Compliance Status', 'Security Score Trends'
+                'Protocol Security Analysis', 'Service Vulnerability Matrix', 'Attack Vector Analysis',
+                'Network Traffic Patterns', 'Security Score', 'Event Distribution'
             ],
             specs=[
                 [{"colspan": 2}, None, {"type": "pie"}],
                 [{"type": "bar"}, {"type": "heatmap"}, {"type": "scatter"}],
-                [{"type": "area"}, {"type": "indicator"}, {"type": "scatter"}]
+                [{"type": "scatter"}, {"type": "indicator"}, {"type": "bar"}]
             ]
         )
         
@@ -255,15 +255,16 @@ class SecurityVisualizationEngine:
                 row=2, col=3
             )
         
-        # 6. Network Traffic Patterns Area Chart
+        # 6. Network Traffic Patterns Scatter Plot
         traffic_patterns = self._analyze_traffic_patterns(network_entities)
         
         fig.add_trace(
             go.Scatter(
                 x=list(range(len(traffic_patterns))),
                 y=traffic_patterns,
-                fill='tozeroy',
-                name="Traffic Volume"
+                mode='lines+markers',
+                name="Traffic Volume",
+                line=dict(color='#2196F3')
             ),
             row=3, col=1
         )
@@ -292,6 +293,21 @@ class SecurityVisualizationEngine:
                 }
             ),
             row=3, col=2
+        )
+        
+        # 8. Event Distribution Bar Chart (row 3, col 3)
+        event_severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+        for event in security_events:
+            event_severity_counts[event.severity] += 1
+        
+        fig.add_trace(
+            go.Bar(
+                x=list(event_severity_counts.keys()),
+                y=list(event_severity_counts.values()),
+                marker_color=['#8B0000', '#FF0000', '#FFA500', '#FFFF00'],
+                name="Event Severity Distribution"
+            ),
+            row=3, col=3
         )
         
         # Update layout
@@ -564,3 +580,214 @@ class SecurityVisualizationEngine:
         
         logger.info(f"Exported {len(exported_files)} visualization files")
         return exported_files
+    
+    # Missing helper methods
+    def _create_host_tooltip(self, ip: str, host_info: Dict, security_score: float) -> str:
+        """Create tooltip text for host nodes"""
+        tooltip = f"<b>Host: {ip}</b><br>"
+        tooltip += f"Type: {'Internal' if host_info.get('is_internal') else 'External'}<br>"
+        tooltip += f"Security Score: {security_score:.1f}/100<br>"
+        tooltip += f"Packets: {host_info.get('packet_count', 0):,}<br>"
+        tooltip += f"Reputation: {host_info.get('reputation', 'Unknown').title()}<br>"
+        
+        protocols = host_info.get('protocols', set())
+        if protocols:
+            tooltip += f"Protocols: {', '.join(list(protocols)[:3])}<br>"
+        
+        return tooltip
+    
+    def _assess_edge_security(self, source: str, target: str, security_events: List) -> str:
+        """Assess security status of communication edge"""
+        # Check if either endpoint is involved in security events
+        for event in security_events:
+            if (event.source_ip == source and event.dest_ip == target) or \
+               (event.source_ip == target and event.dest_ip == source):
+                if event.severity in ['CRITICAL', 'HIGH']:
+                    return 'high_risk'
+                elif event.severity == 'MEDIUM':
+                    return 'medium_risk'
+        
+        return 'secure'
+    
+    def _create_plotly_network_graph(self, node_data: List[Dict], edge_data: List[Dict]) -> go.Figure:
+        """Create Plotly network graph"""
+        fig = go.Figure()
+        
+        # Add edges
+        for edge in edge_data:
+            source_node = next((n for n in node_data if n['id'] == edge['source']), None)
+            target_node = next((n for n in node_data if n['id'] == edge['target']), None)
+            
+            if source_node and target_node:
+                fig.add_trace(go.Scatter(
+                    x=[source_node.get('x', 0), target_node.get('x', 0), None],
+                    y=[source_node.get('y', 0), target_node.get('y', 0), None],
+                    mode='lines',
+                    line=dict(color=edge['color'], width=2),
+                    hoverinfo='none',
+                    showlegend=False
+                ))
+        
+        # Add nodes
+        internal_nodes = [n for n in node_data if n.get('type') == 'internal']
+        external_nodes = [n for n in node_data if n.get('type') == 'external']
+        service_nodes = [n for n in node_data if n.get('type') == 'service']
+        
+        for node_group, name in [(internal_nodes, 'Internal Hosts'),
+                                (external_nodes, 'External Hosts'),
+                                (service_nodes, 'Services')]:
+            if node_group:
+                fig.add_trace(go.Scatter(
+                    x=[n.get('x', 0) for n in node_group],
+                    y=[n.get('y', 0) for n in node_group],
+                    mode='markers+text',
+                    marker=dict(
+                        size=[n.get('size', 10) for n in node_group],
+                        color=[n.get('color', '#999') for n in node_group],
+                        line=dict(width=2, color='white')
+                    ),
+                    text=[n.get('label', '') for n in node_group],
+                    textposition="middle center",
+                    hovertext=[n.get('title', '') for n in node_group],
+                    hoverinfo='text',
+                    name=name
+                ))
+        
+        fig.update_layout(
+            title="Network Security Topology",
+            showlegend=True,
+            hovermode='closest',
+            margin=dict(b=20,l=5,r=5,t=40),
+            annotations=[ dict(
+                text="Interactive Network Graph - Hover for details",
+                showarrow=False,
+                xref="paper", yref="paper",
+                x=0.005, y=-0.002,
+                xanchor='left', yanchor='bottom',
+                font=dict(color='gray', size=12)
+            )],
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            template="plotly_dark"
+        )
+        
+        return fig
+    
+    def _create_cytoscape_elements(self, node_data: List[Dict], edge_data: List[Dict]) -> List[Dict]:
+        """Create Cytoscape elements"""
+        elements = []
+        
+        # Add nodes
+        for node in node_data:
+            elements.append({
+                'data': {
+                    'id': node['id'],
+                    'label': node['label'],
+                    'type': node.get('type', 'host'),
+                    'security_score': node.get('security_score', 0)
+                },
+                'position': {'x': node.get('x', 0), 'y': node.get('y', 0)},
+                'classes': node.get('type', 'host')
+            })
+        
+        # Add edges
+        for edge in edge_data:
+            elements.append({
+                'data': {
+                    'id': f"{edge['source']}-{edge['target']}",
+                    'source': edge['source'],
+                    'target': edge['target'],
+                    'weight': edge.get('weight', 1)
+                },
+                'classes': edge.get('security_status', 'secure')
+            })
+        
+        return elements
+    
+    def _calculate_network_statistics(self, graph) -> Dict[str, Any]:
+        """Calculate network statistics"""
+        return {
+            'node_count': graph.number_of_nodes(),
+            'edge_count': graph.number_of_edges(),
+            'density': nx.density(graph),
+            'connected_components': nx.number_connected_components(graph)
+        }
+    
+    def _create_security_summary(self, hosts: Dict, security_events: List) -> Dict[str, Any]:
+        """Create security summary"""
+        return {
+            'total_hosts': len(hosts),
+            'internal_hosts': len([h for h in hosts.values() if h.get('is_internal')]),
+            'external_hosts': len([h for h in hosts.values() if not h.get('is_internal')]),
+            'total_events': len(security_events),
+            'critical_events': len([e for e in security_events if e.severity == 'CRITICAL']),
+            'high_events': len([e for e in security_events if e.severity == 'HIGH'])
+        }
+    
+    def _assess_host_risk_level(self, host_data: Dict, security_events: List) -> str:
+        """Assess host risk level"""
+        security_score = self._calculate_host_security_score(host_data, security_events)
+        if security_score >= 80:
+            return 'LOW'
+        elif security_score >= 60:
+            return 'MEDIUM'
+        else:
+            return 'HIGH'
+    
+    def _analyze_protocol_security(self, network_entities: Dict) -> Dict[str, float]:
+        """Analyze protocol security scores"""
+        protocols = network_entities.get('protocols', {})
+        # Simplified protocol security scoring
+        protocol_scores = {}
+        for protocol in ['TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'DNS']:
+            protocol_scores[protocol] = 75.0  # Default score
+        return protocol_scores
+    
+    def _analyze_attack_vectors(self, security_events: List) -> List[Dict]:
+        """Analyze attack vectors"""
+        attack_vectors = []
+        event_types = {}
+        
+        for event in security_events:
+            event_type = event.event_type
+            if event_type not in event_types:
+                event_types[event_type] = {'count': 0, 'severity_sum': 0}
+            
+            event_types[event_type]['count'] += 1
+            severity_score = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}.get(event.severity, 1)
+            event_types[event_type]['severity_sum'] += severity_score
+        
+        for vector_type, data in event_types.items():
+            attack_vectors.append({
+                'vector_type': vector_type,
+                'frequency': data['count'],
+                'severity_score': data['severity_sum'] / data['count'],
+                'impact': min(10, data['count'] * data['severity_sum'] / 10)
+            })
+        
+        return attack_vectors
+    
+    def _analyze_traffic_patterns(self, network_entities: Dict) -> List[float]:
+        """Analyze traffic patterns over time"""
+        connections = network_entities.get('connections', [])
+        # Simplified traffic pattern analysis
+        if not connections:
+            return [0] * 24
+        
+        # Create hourly traffic pattern
+        hourly_traffic = [0] * 24
+        for conn in connections:
+            timestamp = conn.get('timestamp', 0)
+            hour = int((timestamp % 86400) / 3600)  # Convert to hour of day
+            hourly_traffic[hour] += conn.get('packet_size', 1)
+        
+        return hourly_traffic
+    
+    def _get_risk_class(self, security_score: float) -> str:
+        """Get CSS class for risk level"""
+        if security_score >= 80:
+            return 'low-risk'
+        elif security_score >= 60:
+            return 'medium-risk'
+        else:
+            return 'high-risk'

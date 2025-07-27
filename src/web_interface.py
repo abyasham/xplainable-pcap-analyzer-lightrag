@@ -17,9 +17,13 @@ import zipfile
 import io
 from dataclasses import asdict
 
-from pcap_processor import AdvancedPcapProcessor
-from knowledge_graph import SecurityKnowledgeGraph
-from visualization import SecurityVisualizationEngine
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.pcap_processor import AdvancedPcapProcessor
+from src.knowledge_graph import SecurityKnowledgeGraph
+from src.visualization import SecurityVisualizationEngine
 
 logger = logging.getLogger(__name__)
 
