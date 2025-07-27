@@ -1,0 +1,65 @@
+# PCAP Security Analyzer Configuration
+
+# API Keys and Services
+openai:
+  api_key: "${OPENAI_API_KEY}"
+  model: "gpt-4o-mini"
+  embedding_model: "text-embedding-3-large"
+  max_tokens: 4096
+
+# Neo4j Configuration
+neo4j:
+  uri: "bolt://localhost:7687"
+  username: "neo4j"
+  password: "${NEO4J_PASSWORD}"
+  database: "pcap_security"
+
+# LightRAG Settings
+lightrag:
+  working_dir: "./data/lightrag_cache"
+  max_tokens: 8192
+  entity_extract_max_gleaning: 3
+  enable_llm_cache: true
+  enable_rerank: true
+  
+# Reranker Settings  
+reranker:
+  model: "jina-reranker-v2-base-multilingual"
+  top_k: 10
+  
+# Security Analysis
+security:
+  enable_deep_packet_inspection: true
+  threat_detection_rules: "./config/threat_rules.yaml"
+  vulnerability_database: "./config/vulnerabilities.yaml"
+  attack_patterns: "./config/attack_patterns.yaml"
+  
+# PCAP Processing
+pcap:
+  max_packet_size: 50000
+  chunk_size: 1000
+  enable_payload_analysis: true
+  extract_files: true
+  dns_analysis: true
+  tls_analysis: true
+  
+# Visualization
+visualization:
+  default_layout: "force"
+  node_limit: 1000
+  edge_limit: 5000
+  export_formats: ["html", "png", "svg", "json"]
+  
+# Web Interface
+web:
+  host: "localhost"
+  port: 8501
+  title: "PCAP Security Analyzer"
+  theme: "dark"
+  
+# Logging
+logging:
+  level: "INFO"
+  file: "./logs/pcap_analyzer.log"
+  max_size: "100MB"
+  backup_count: 5
