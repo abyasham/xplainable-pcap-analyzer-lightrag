@@ -1,6 +1,6 @@
 """
 Enhanced PCAP Processor for Security Analysis
-Supports deep packet inspection and advanced security detection
+Supports deep packet inspection and advanced security detection with comprehensive threat analysis
 """
 
 import scapy.all as scapy
@@ -13,12 +13,17 @@ import asyncio
 import hashlib
 import json
 import re
+import math
 from datetime import datetime
 from collections import defaultdict, Counter
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import ipaddress
 import logging
+
+# Import enhanced components
+from .enhanced_payload_analyzer import EnhancedPayloadAnalyzer, ThreatDetection
+from .iso27001_compliance_analyzer import ISO27001ComplianceAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +61,16 @@ class AdvancedPcapProcessor:
             'arp_table': {},
             'tls_sessions': {},
             'http_sessions': {},
+            'tcp_sessions': {},
             'file_transfers': {},
             'malware_indicators': {},
-            'network_flows': {}
+            'network_flows': {},
+            'scan_tracking': {}
         }
+        
+        # Initialize enhanced components
+        self.enhanced_payload_analyzer = EnhancedPayloadAnalyzer(config)
+        self.compliance_analyzer = ISO27001ComplianceAnalyzer(config)
         
         # Security detection rules
         self.attack_patterns = self._load_attack_patterns()
@@ -69,6 +80,10 @@ class AdvancedPcapProcessor:
         self.packet_stats = defaultdict(int)
         self.protocol_stats = defaultdict(int)
         self.port_stats = defaultdict(int)
+        
+        # Enhanced threat detection storage
+        self.threat_detections = []
+        self.payload_analyses = []
         
     def _load_attack_patterns(self) -> Dict[str, Any]:
         """Load attack pattern definitions"""
@@ -343,13 +358,83 @@ class AdvancedPcapProcessor:
         elif flags & 0x04:  # RST
             session['session_state'] = 'RESET'
         
-        # Payload analysis
+        # Enhanced payload analysis
         if tcp.payload:
             payload = bytes(tcp.payload)
-            await self._analyze_tcp_payload(payload, session, timestamp)
+            
+            # Create packet info for enhanced analysis
+            packet_info = {
+                'source_ip': ip.src,
+                'dest_ip': ip.dst,
+                'source_port': src_port,
+                'dest_port': dst_port,
+                'protocol': 'TCP',
+                'layer': 'transport',
+                'timestamp': timestamp,
+                'session_id': session_key,
+                'session_context': session.get('session_state', 'unknown')
+            }
+            
+            # Use enhanced payload analyzer
+            payload_analysis = await self.enhanced_payload_analyzer.analyze_payload_comprehensive(
+                payload, packet_info
+            )
+            
+            # Store payload analysis results
+            self.payload_analyses.append(payload_analysis)
+            
+            # Convert payload analysis threats to security events
+            await self._convert_payload_threats_to_events(payload_analysis, packet_info)
+            
+            # Store payload data in session
+            session['payload_data'].append({
+                'timestamp': timestamp,
+                'size': len(payload),
+                'analysis': payload_analysis,
+                'hex_preview': payload[:64].hex() if len(payload) > 0 else ''
+            })
         
         # Port scanning detection
         await self._detect_port_scanning(ip.src, dst_port, timestamp)
+    
+    async def _analyze_udp_layer(self, packet, timestamp: float):
+        """Analyze UDP layer for security threats"""
+        
+        udp = packet[UDP]
+        ip = packet[IP]
+        
+        src_port = udp.sport
+        dst_port = udp.dport
+        
+        # Service identification
+        service_info = self._identify_service(dst_port, 'udp')
+        
+        # Enhanced payload analysis for UDP
+        if udp.payload:
+            payload = bytes(udp.payload)
+            
+            # Create packet info for enhanced analysis
+            packet_info = {
+                'source_ip': ip.src,
+                'dest_ip': ip.dst,
+                'source_port': src_port,
+                'dest_port': dst_port,
+                'protocol': 'UDP',
+                'layer': 'transport',
+                'timestamp': timestamp,
+                'service': service_info
+            }
+            
+            # Use enhanced payload analyzer
+            payload_analysis = await self.enhanced_payload_analyzer.analyze_payload_comprehensive(
+                payload, packet_info
+            )
+            
+            # Store payload analysis results
+            self.payload_analyses.append(payload_analysis)
+            
+            # Convert payload analysis threats to security events
+            await self._convert_payload_threats_to_events(payload_analysis, packet_info)
         
     async def _analyze_dns_layer(self, packet, timestamp: float):
         """Comprehensive DNS analysis with threat detection"""
@@ -446,6 +531,153 @@ class AdvancedPcapProcessor:
             self.network_entities['http_sessions'][session_key] = []
         
         self.network_entities['http_sessions'][session_key].append(request_data)
+    
+    async def _analyze_http_response(self, http, ip, tcp, timestamp):
+        """Analyze HTTP response for security indicators"""
+        
+        status_code = getattr(http, 'Status_Code', b'200').decode()
+        
+        response_data = {
+            'timestamp': timestamp,
+            'source_ip': ip.src,
+            'dest_ip': ip.dst,
+            'status_code': status_code,
+            'headers': {},
+            'payload': '',
+            'security_flags': []
+        }
+        
+        # Extract headers
+        if hasattr(http, 'headers'):
+            for header in http.headers:
+                if hasattr(header, 'name') and hasattr(header, 'value'):
+                    header_name = header.name.decode()
+                    header_value = header.value.decode()
+                    response_data['headers'][header_name] = header_value
+        
+        # Payload analysis
+        if hasattr(http, 'load'):
+            response_data['payload'] = http.load.decode('utf-8', errors='ignore')
+        
+        # Check for information disclosure
+        if '500' in status_code or 'error' in response_data['payload'].lower():
+            await self._create_security_event(
+                event_type="information_disclosure",
+                severity="LOW",
+                source_ip=ip.src,
+                dest_ip=ip.dst,
+                description=f"Potential information disclosure in HTTP response: {status_code}",
+                evidence={'status_code': status_code, 'response_preview': response_data['payload'][:200]},
+                timestamp=timestamp
+            )
+    
+    async def _analyze_tls_layer(self, packet, timestamp: float):
+        """Analyze TLS layer for security vulnerabilities"""
+        
+        tls = packet[TLS]
+        ip = packet[IP]
+        tcp = packet[TCP]
+        
+        session_key = f"tls_{ip.src}:{tcp.sport}-{ip.dst}:{tcp.dport}"
+        
+        if session_key not in self.network_entities['tls_sessions']:
+            self.network_entities['tls_sessions'][session_key] = {
+                'source_ip': ip.src,
+                'dest_ip': ip.dst,
+                'source_port': tcp.sport,
+                'dest_port': tcp.dport,
+                'first_seen': timestamp,
+                'last_seen': timestamp,
+                'tls_version': None,
+                'cipher_suite': None,
+                'certificates': [],
+                'vulnerabilities': []
+            }
+        
+        session = self.network_entities['tls_sessions'][session_key]
+        session['last_seen'] = timestamp
+        
+        # TLS version analysis
+        if hasattr(tls, 'version'):
+            session['tls_version'] = tls.version
+            
+            # Check for vulnerable TLS versions
+            if tls.version < 0x0303:  # TLS 1.2
+                await self._create_security_event(
+                    event_type="tls_vulnerability",
+                    severity="MEDIUM",
+                    source_ip=ip.src,
+                    dest_ip=ip.dst,
+                    description=f"Vulnerable TLS version detected: {hex(tls.version)}",
+                    evidence={'tls_version': hex(tls.version)},
+                    timestamp=timestamp,
+                    attack_category="PROTOCOL_ATTACK"
+                )
+    
+    async def _analyze_arp_layer(self, packet, timestamp: float):
+        """Analyze ARP layer for poisoning attacks"""
+        
+        arp = packet[ARP]
+        
+        # ARP table tracking
+        arp_key = f"{arp.psrc}_{arp.hwsrc}"
+        
+        if arp_key not in self.network_entities['arp_table']:
+            self.network_entities['arp_table'][arp_key] = {
+                'ip_address': arp.psrc,
+                'mac_address': arp.hwsrc,
+                'first_seen': timestamp,
+                'last_seen': timestamp,
+                'request_count': 0,
+                'reply_count': 0
+            }
+        
+        arp_entry = self.network_entities['arp_table'][arp_key]
+        arp_entry['last_seen'] = timestamp
+        
+        if arp.op == 1:  # ARP Request
+            arp_entry['request_count'] += 1
+        elif arp.op == 2:  # ARP Reply
+            arp_entry['reply_count'] += 1
+            
+            # Check for ARP poisoning indicators
+            await self._detect_arp_poisoning(arp, timestamp)
+    
+    async def _detect_arp_poisoning(self, arp, timestamp: float):
+        """Detect ARP poisoning attacks"""
+        
+        # Check for gratuitous ARP replies
+        if arp.op == 2 and arp.psrc == arp.pdst:
+            await self._create_security_event(
+                event_type="arp_poisoning",
+                severity="HIGH",
+                description=f"Gratuitous ARP reply detected from {arp.hwsrc}",
+                evidence={
+                    'source_ip': arp.psrc,
+                    'source_mac': arp.hwsrc,
+                    'target_ip': arp.pdst,
+                    'target_mac': arp.hwdst
+                },
+                timestamp=timestamp,
+                attack_category="NETWORK_ATTACK"
+            )
+        
+        # Check for MAC-IP conflicts
+        for existing_key, existing_entry in self.network_entities['arp_table'].items():
+            if (existing_entry['ip_address'] == arp.psrc and 
+                existing_entry['mac_address'] != arp.hwsrc):
+                await self._create_security_event(
+                    event_type="arp_poisoning",
+                    severity="HIGH",
+                    description=f"ARP spoofing detected: IP {arp.psrc} claimed by multiple MACs",
+                    evidence={
+                        'conflicting_ip': arp.psrc,
+                        'original_mac': existing_entry['mac_address'],
+                        'spoofing_mac': arp.hwsrc
+                    },
+                    timestamp=timestamp,
+                    attack_category="NETWORK_ATTACK"
+                )
     
     async def _detect_web_attacks(self, request_data: Dict):
         """Detect web-based attacks in HTTP requests"""
@@ -548,6 +780,53 @@ class AdvancedPcapProcessor:
                 timestamp=dns_record['timestamp']
             )
     
+    async def _detect_malicious_domains(self, query_name: str, dns_record: Dict):
+        """Detect malicious domains in DNS queries"""
+        
+        # Placeholder for malicious domain detection
+        # In a real implementation, this would check against threat intelligence feeds
+        
+        suspicious_keywords = ['malware', 'phishing', 'botnet', 'c2', 'command']
+        
+        for keyword in suspicious_keywords:
+            if keyword in query_name.lower():
+                dns_record['suspicious_indicators'].append(f'suspicious_keyword_{keyword}')
+                
+                await self._create_security_event(
+                    event_type="malicious_domain_query",
+                    severity="HIGH",
+                    source_ip=dns_record['requester'],
+                    description=f"Suspicious domain query detected: {query_name}",
+                    evidence={
+                        'domain': query_name,
+                        'suspicious_keyword': keyword
+                    },
+                    timestamp=dns_record['timestamp'],
+                    attack_category="MALWARE_COMMUNICATION"
+                )
+    
+    async def _detect_threats_in_packet(self, packet, timestamp: float):
+        """Real-time threat detection in individual packets"""
+        
+        # Check for known vulnerability signatures
+        packet_bytes = bytes(packet)
+        
+        for vuln_id, vuln_info in self.vulnerability_signatures.items():
+            for pattern in vuln_info['patterns']:
+                if pattern in packet_bytes:
+                    await self._create_security_event(
+                        event_type="vulnerability_exploit",
+                        severity="CRITICAL",
+                        description=f"Known vulnerability exploit detected: {vuln_info['name']}",
+                        evidence={
+                            'vulnerability_id': vuln_id,
+                            'pattern_matched': pattern.hex(),
+                            'packet_preview': packet_bytes[:100].hex()
+                        },
+                        timestamp=timestamp,
+                        attack_category="EXPLOIT_ATTEMPT"
+                    )
+    
     async def _detect_port_scanning(self, source_ip: str, dest_port: int, timestamp: float):
         """Detect port scanning activities"""
         
@@ -587,7 +866,7 @@ class AdvancedPcapProcessor:
                     timestamp=timestamp
                 )
     
-    async def _create_security_event(self, event_type: str, severity: str, 
+    async def _create_security_event(self, event_type: str, severity: str,
                                    source_ip: str = None, dest_ip: str = None,
                                    source_port: int = None, dest_port: int = None,
                                    protocol: str = 'UNKNOWN', description: str = '',
@@ -719,6 +998,15 @@ class AdvancedPcapProcessor:
         # Statistical analysis
         await self._statistical_anomaly_detection()
         
+        # Perform comprehensive threat correlation
+        await self._perform_comprehensive_threat_correlation()
+        
+        # Analyze attack chains
+        await self._analyze_attack_chains()
+        
+        # Perform compliance analysis
+        await self._perform_compliance_analysis()
+        
         logger.info("Advanced security analysis completed")
     
     async def _analyze_communication_patterns(self):
@@ -745,6 +1033,102 @@ class AdvancedPcapProcessor:
                     evidence={'byte_count': stats['byte_count'], 'packet_count': stats['packet_count']},
                     attack_category="DATA_EXFILTRATION"
                 )
+    
+    async def _detect_data_exfiltration(self):
+        """Detect potential data exfiltration patterns"""
+        
+        # Analyze large outbound transfers
+        outbound_transfers = defaultdict(int)
+        
+        for connection in self.network_entities['connections']:
+            source_ip = connection['source_ip']
+            if self._is_internal_ip(source_ip):
+                dest_ip = connection['dest_ip']
+                if not self._is_internal_ip(dest_ip):
+                    outbound_transfers[f"{source_ip}->{dest_ip}"] += connection.get('packet_size', 0)
+        
+        # Flag suspicious transfers
+        for transfer_key, total_bytes in outbound_transfers.items():
+            if total_bytes > 50_000_000:  # >50MB
+                source_ip, dest_ip = transfer_key.split('->')
+                await self._create_security_event(
+                    event_type="data_exfiltration",
+                    severity="HIGH",
+                    source_ip=source_ip,
+                    dest_ip=dest_ip,
+                    description=f"Large outbound data transfer detected: {total_bytes:,} bytes",
+                    evidence={'bytes_transferred': total_bytes},
+                    attack_category="DATA_EXFILTRATION"
+                )
+    
+    async def _analyze_protocol_anomalies(self):
+        """Analyze protocol usage for anomalies"""
+        
+        # Check for unusual protocol distributions
+        total_packets = sum(self.protocol_stats.values())
+        
+        for protocol, count in self.protocol_stats.items():
+            percentage = (count / total_packets) * 100
+            
+            # Flag protocols with unusual usage patterns
+            if protocol in ['DNS', 'ICMP'] and percentage > 30:
+                await self._create_security_event(
+                    event_type="protocol_anomaly",
+                    severity="MEDIUM",
+                    description=f"Unusual {protocol} traffic volume: {percentage:.1f}% of total traffic",
+                    evidence={'protocol': protocol, 'percentage': percentage, 'packet_count': count},
+                    attack_category="ANOMALOUS_BEHAVIOR"
+                )
+    
+    async def _detect_lateral_movement(self):
+        """Detect lateral movement patterns"""
+        
+        # Analyze internal-to-internal communications
+        internal_communications = defaultdict(set)
+        
+        for connection in self.network_entities['connections']:
+            source_ip = connection['source_ip']
+            dest_ip = connection['dest_ip']
+            
+            if self._is_internal_ip(source_ip) and self._is_internal_ip(dest_ip):
+                internal_communications[source_ip].add(dest_ip)
+        
+        # Flag hosts communicating with many internal hosts
+        for source_ip, destinations in internal_communications.items():
+            if len(destinations) > 10:  # Communicating with >10 internal hosts
+                await self._create_security_event(
+                    event_type="lateral_movement",
+                    severity="MEDIUM",
+                    source_ip=source_ip,
+                    description=f"Potential lateral movement: {source_ip} communicating with {len(destinations)} internal hosts",
+                    evidence={'destination_count': len(destinations), 'destinations': list(destinations)[:10]},
+                    attack_category="LATERAL_MOVEMENT"
+                )
+    
+    async def _statistical_anomaly_detection(self):
+        """Perform statistical anomaly detection"""
+        
+        # Analyze packet size distributions
+        packet_sizes = []
+        for connection in self.network_entities['connections']:
+            packet_sizes.append(connection.get('packet_size', 0))
+        
+        if packet_sizes:
+            avg_size = sum(packet_sizes) / len(packet_sizes)
+            
+            # Flag unusually large packets
+            for connection in self.network_entities['connections']:
+                packet_size = connection.get('packet_size', 0)
+                if packet_size > avg_size * 10:  # 10x larger than average
+                    await self._create_security_event(
+                        event_type="anomalous_packet_size",
+                        severity="LOW",
+                        source_ip=connection['source_ip'],
+                        dest_ip=connection['dest_ip'],
+                        description=f"Unusually large packet detected: {packet_size} bytes (avg: {avg_size:.0f})",
+                        evidence={'packet_size': packet_size, 'average_size': avg_size},
+                        attack_category="ANOMALOUS_BEHAVIOR"
+                    )
     
     def _generate_analysis_summary(self) -> Dict[str, Any]:
         """Generate comprehensive analysis summary"""
@@ -785,6 +1169,293 @@ class AdvancedPcapProcessor:
             'top_threats': self._get_top_threats(),
             'recommendations': self._generate_recommendations()
         }
+    
+    async def _convert_payload_threats_to_events(self, payload_analysis: Dict, packet_info: Dict):
+        """Convert payload analysis threats to security events"""
+        
+        threats_detected = payload_analysis.get('threats_detected', [])
+        
+        for threat in threats_detected:
+            # Create security event from threat detection
+            await self._create_security_event(
+                event_type=threat.get('attack_type', 'unknown_threat'),
+                severity=threat.get('severity', 'MEDIUM'),
+                source_ip=packet_info.get('source_ip'),
+                dest_ip=packet_info.get('dest_ip'),
+                source_port=packet_info.get('source_port'),
+                dest_port=packet_info.get('dest_port'),
+                protocol=packet_info.get('protocol', 'TCP'),
+                description=threat.get('description', 'Threat detected in payload analysis'),
+                evidence={
+                    'payload_analysis': threat,
+                    'hex_evidence': threat.get('evidence', ''),
+                    'confidence': threat.get('confidence', 0.0),
+                    'attack_vector': threat.get('attack_vector', 'unknown')
+                },
+                timestamp=packet_info.get('timestamp'),
+                attack_category=self._map_attack_type_to_category(threat.get('attack_type', 'unknown')),
+                confidence_score=threat.get('confidence', 0.0),
+                remediation=threat.get('remediation', [])
+            )
+    
+    def _map_attack_type_to_category(self, attack_type: str) -> str:
+        """Map attack type to category"""
+        
+        category_mapping = {
+            'sql_injection_attempt': 'WEB_APPLICATION_ATTACK',
+            'xss_attempt': 'WEB_APPLICATION_ATTACK',
+            'directory_traversal': 'WEB_APPLICATION_ATTACK',
+            'token_injection': 'AUTHENTICATION_ATTACK',
+            'command_injection': 'SYSTEM_ATTACK',
+            'arp_poisoning': 'NETWORK_ATTACK',
+            'dns_tunneling': 'DATA_EXFILTRATION',
+            'tls_vulnerability': 'PROTOCOL_ATTACK',
+            'zmq_exploitation': 'SERVICE_ATTACK'
+        }
+        
+        return category_mapping.get(attack_type, 'UNKNOWN_ATTACK')
+
+    async def _perform_comprehensive_threat_correlation(self):
+        """Perform comprehensive threat correlation analysis"""
+        
+        logger.info("Performing comprehensive threat correlation...")
+        
+        # Correlate payload analysis results with security events
+        for payload_analysis in self.payload_analyses:
+            threats = payload_analysis.get('threats_detected', [])
+            
+            for threat in threats:
+                # Look for related security events
+                related_events = self._find_related_security_events(threat)
+                
+                if related_events:
+                    # Create correlation event
+                    await self._create_security_event(
+                        event_type="threat_correlation",
+                        severity="HIGH",
+                        description=f"Correlated threat pattern detected: {threat.get('attack_type', 'unknown')}",
+                        evidence={
+                            'primary_threat': threat,
+                            'related_events': [asdict(event) for event in related_events],
+                            'correlation_confidence': self._calculate_correlation_confidence(threat, related_events)
+                        },
+                        attack_category="CORRELATED_ATTACK",
+                        confidence_score=0.9
+                    )
+    
+    async def _analyze_attack_chains(self):
+        """Analyze potential attack chains and multi-stage attacks"""
+        
+        logger.info("Analyzing attack chains...")
+        
+        # Group security events by source IP and time windows
+        attack_sequences = self._group_events_by_attack_sequence()
+        
+        for sequence in attack_sequences:
+            if len(sequence) >= 2:  # Multi-stage attack
+                await self._create_security_event(
+                    event_type="multi_stage_attack",
+                    severity="CRITICAL",
+                    source_ip=sequence[0].source_ip,
+                    description=f"Multi-stage attack detected with {len(sequence)} phases",
+                    evidence={
+                        'attack_sequence': [asdict(event) for event in sequence],
+                        'attack_duration': sequence[-1].timestamp - sequence[0].timestamp,
+                        'attack_progression': self._analyze_attack_progression(sequence)
+                    },
+                    attack_category="ADVANCED_PERSISTENT_THREAT",
+                    confidence_score=0.95
+                )
+    
+    async def _perform_compliance_analysis(self):
+        """Perform ISO 27001 compliance analysis"""
+        
+        logger.info("Performing ISO 27001 compliance analysis...")
+        
+        try:
+            # Perform comprehensive compliance analysis
+            compliance_assessment = await self.compliance_analyzer.analyze_comprehensive_compliance(
+                self.network_entities,
+                self.threat_detections
+            )
+            
+            # Store compliance results
+            self.network_entities['compliance_assessment'] = {
+                'overall_status': compliance_assessment.overall_status.value,
+                'compliance_score': compliance_assessment.compliance_score,
+                'total_violations': len(compliance_assessment.violations),
+                'critical_violations': len([v for v in compliance_assessment.violations if v.severity == 'CRITICAL']),
+                'high_violations': len([v for v in compliance_assessment.violations if v.severity == 'HIGH']),
+                'recommendations': compliance_assessment.recommendations,
+                'assessment_timestamp': compliance_assessment.assessment_timestamp.isoformat()
+            }
+            
+            # Create compliance violation events for critical issues
+            critical_violations = [v for v in compliance_assessment.violations if v.severity == 'CRITICAL']
+            for violation in critical_violations:
+                await self._create_security_event(
+                    event_type="compliance_violation",
+                    severity="CRITICAL",
+                    description=f"Critical ISO 27001 compliance violation: {violation.control_name}",
+                    evidence={
+                        'control_id': violation.control_id,
+                        'violation_type': violation.violation_type,
+                        'compliance_gap': violation.compliance_gap,
+                        'affected_assets': violation.affected_assets,
+                        'risk_rating': violation.risk_rating
+                    },
+                    attack_category="COMPLIANCE_VIOLATION",
+                    confidence_score=0.9,
+                    remediation=violation.remediation_actions
+                )
+            
+            logger.info(f"Compliance analysis completed: {compliance_assessment.compliance_score:.1f}% compliant")
+            
+        except Exception as e:
+            logger.error(f"Compliance analysis failed: {e}")
+    
+    def _find_related_security_events(self, threat: Dict) -> List:
+        """Find security events related to a threat"""
+        
+        related_events = []
+        threat_type = threat.get('attack_type', '')
+        
+        # Look for events of similar type or from same source
+        for event in self.network_entities['security_events']:
+            if (event.event_type == threat_type or
+                self._are_attacks_related(threat_type, event.event_type)):
+                related_events.append(event)
+        
+        return related_events
+    
+    def _are_attacks_related(self, attack1: str, attack2: str) -> bool:
+        """Check if two attack types are related"""
+        
+        related_groups = [
+            ['sql_injection_attempt', 'xss_attempt', 'directory_traversal'],  # Web attacks
+            ['arp_poisoning', 'port_scanning', 'dns_tunneling'],  # Network attacks
+            ['token_injection', 'authentication_bypass', 'privilege_escalation'],  # Auth attacks
+            ['command_injection', 'privilege_escalation', 'lateral_movement']  # System attacks
+        ]
+        
+        for group in related_groups:
+            if attack1 in group and attack2 in group:
+                return True
+        
+        return False
+    
+    def _calculate_correlation_confidence(self, threat: Dict, related_events: List) -> float:
+        """Calculate confidence score for threat correlation"""
+        
+        base_confidence = 0.5
+        
+        # Increase confidence based on number of related events
+        confidence = base_confidence + (len(related_events) * 0.1)
+        
+        # Increase confidence if events are close in time
+        if related_events:
+            time_proximity = self._calculate_time_proximity(related_events)
+            confidence += time_proximity * 0.2
+        
+        return min(1.0, confidence)
+    
+    def _calculate_time_proximity(self, events: List) -> float:
+        """Calculate time proximity factor for events"""
+        
+        if len(events) < 2:
+            return 0.0
+        
+        timestamps = [event.timestamp for event in events]
+        time_span = max(timestamps) - min(timestamps)
+        
+        # Higher proximity for events within shorter time spans
+        if time_span < 60:  # Within 1 minute
+            return 1.0
+        elif time_span < 300:  # Within 5 minutes
+            return 0.8
+        elif time_span < 3600:  # Within 1 hour
+            return 0.5
+        else:
+            return 0.2
+    
+    def _group_events_by_attack_sequence(self) -> List[List]:
+        """Group security events into potential attack sequences"""
+        
+        sequences = []
+        events_by_source = defaultdict(list)
+        
+        # Group events by source IP
+        for event in self.network_entities['security_events']:
+            if event.source_ip:
+                events_by_source[event.source_ip].append(event)
+        
+        # Analyze each source for attack sequences
+        for source_ip, events in events_by_source.items():
+            if len(events) >= 2:
+                # Sort by timestamp
+                events.sort(key=lambda x: x.timestamp)
+                
+                # Group events within time windows
+                current_sequence = [events[0]]
+                
+                for i in range(1, len(events)):
+                    time_diff = events[i].timestamp - events[i-1].timestamp
+                    
+                    if time_diff <= 3600:  # Within 1 hour
+                        current_sequence.append(events[i])
+                    else:
+                        if len(current_sequence) >= 2:
+                            sequences.append(current_sequence)
+                        current_sequence = [events[i]]
+                
+                if len(current_sequence) >= 2:
+                    sequences.append(current_sequence)
+        
+        return sequences
+    
+    def _analyze_attack_progression(self, sequence: List) -> Dict:
+        """Analyze the progression of an attack sequence"""
+        
+        progression = {
+            'phases': [],
+            'escalation_detected': False,
+            'lateral_movement': False,
+            'data_access_attempts': False
+        }
+        
+        for i, event in enumerate(sequence):
+            phase = {
+                'phase_number': i + 1,
+                'event_type': event.event_type,
+                'severity': event.severity,
+                'timestamp': event.timestamp,
+                'description': event.description
+            }
+            progression['phases'].append(phase)
+            
+            # Check for escalation patterns
+            if i > 0 and self._is_escalation(sequence[i-1], event):
+                progression['escalation_detected'] = True
+            
+            # Check for lateral movement
+            if 'lateral' in event.event_type or 'movement' in event.description.lower():
+                progression['lateral_movement'] = True
+            
+            # Check for data access attempts
+            if any(term in event.event_type for term in ['data', 'file', 'directory', 'exfiltration']):
+                progression['data_access_attempts'] = True
+        
+        return progression
+    
+    def _is_escalation(self, prev_event, current_event) -> bool:
+        """Check if current event represents escalation from previous"""
+        
+        severity_levels = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+        
+        prev_level = severity_levels.get(prev_event.severity, 1)
+        current_level = severity_levels.get(current_event.severity, 1)
+        
+        return current_level > prev_level
     
     def _get_top_threats(self) -> List[Dict[str, Any]]:
         """Get top security threats detected"""

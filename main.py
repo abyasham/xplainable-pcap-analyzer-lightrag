@@ -16,8 +16,9 @@ import subprocess
 
 # Import application components
 from src.pcap_processor import AdvancedPcapProcessor
-from src.knowledge_graph import SecurityKnowledgeGraph
-from src.visualization import SecurityVisualizationEngine
+from src.enhanced_knowledge_graph import EnhancedSecurityKnowledgeGraph
+from src.neo4j_html_visualizer import Neo4jHTMLVisualizer
+from src.jina_reranker import JinaRerankerService
 from src.web_interface import main as run_web_interface
 
 # Configure logging
@@ -42,11 +43,12 @@ class PCAPSecurityAnalyzer:
         self.processor = None
         self.knowledge_graph = None
         self.visualizer = None
+        self.jina_reranker = None
         
         # Create necessary directories
         self._setup_directories()
         
-        logger.info("PCAP Security Analyzer initialized")
+        logger.info("Enhanced PCAP Security Analyzer initialized")
     
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -95,30 +97,46 @@ class PCAPSecurityAnalyzer:
                 'max_tokens': 4096
             },
             'neo4j': {
-                'uri': 'bolt://localhost:7687',
-                'username': 'neo4j',
+                'uri': os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
+                'username': os.getenv('NEO4J_USERNAME', 'neo4j'),
                 'password': os.getenv('NEO4J_PASSWORD', 'password')
+            },
+            'jina': {
+                'api_key': os.getenv('JINA_API_KEY'),
+                'model': 'jina-reranker-v2-base-multilingual',
+                'max_documents': 100,
+                'enable_fallback': True
             },
             'lightrag': {
                 'working_dir': './data/lightrag_cache',
                 'max_tokens': 8192,
                 'entity_extract_max_gleaning': 3,
-                'enable_llm_cache': True
+                'enable_llm_cache': True,
+                'enable_enhanced_extraction': True
             },
             'pcap': {
                 'max_packet_size': 50000,
                 'chunk_size': 1000,
-                'enable_payload_analysis': True
+                'enable_payload_analysis': True,
+                'enable_enhanced_analysis': True
             },
             'security': {
                 'enable_deep_packet_inspection': True,
                 'enable_ml_detection': True,
-                'enable_behavioral_analysis': True
+                'enable_behavioral_analysis': True,
+                'enable_compliance_analysis': True,
+                'enable_threat_correlation': True
+            },
+            'visualization': {
+                'enable_neo4j_graphs': True,
+                'enable_interactive_html': True,
+                'graph_layout': 'force-directed',
+                'max_nodes': 1000
             },
             'web': {
                 'host': 'localhost',
                 'port': 8501,
-                'title': 'PCAP Security Analyzer'
+                'title': 'Enhanced PCAP Security Analyzer'
             }
         }
     
@@ -152,18 +170,19 @@ class PCAPSecurityAnalyzer:
             logger.info("Processing PCAP file...")
             analysis_results = await self.processor.process_pcap_file(pcap_path)
             
-            # Build knowledge graph
+            # Build enhanced knowledge graph
             if self.knowledge_graph:
-                logger.info("Building knowledge graph...")
-                kg_success = await self.knowledge_graph.build_knowledge_graph(
-                    analysis_results['network_entities']
+                logger.info("Building comprehensive knowledge graph...")
+                kg_success = await self.knowledge_graph.build_comprehensive_knowledge_graph(
+                    analysis_results['network_entities'],
+                    self.jina_reranker
                 )
                 
                 if kg_success:
                     analysis_results['knowledge_graph_ready'] = True
-                    logger.info("Knowledge graph built successfully")
+                    logger.info("Enhanced knowledge graph built successfully")
                 else:
-                    logger.warning("Knowledge graph construction failed")
+                    logger.warning("Enhanced knowledge graph construction failed")
                     analysis_results['knowledge_graph_ready'] = False
             
             # Generate visualizations
@@ -183,47 +202,59 @@ class PCAPSecurityAnalyzer:
             raise
     
     async def _initialize_components(self):
-        """Initialize analysis components"""
+        """Initialize enhanced analysis components"""
         
-        # Initialize PCAP processor
+        # Initialize PCAP processor with enhanced capabilities
         self.processor = AdvancedPcapProcessor(self.config)
         
-        # Initialize knowledge graph (if configured)
+        # Initialize Jina reranker service (if configured)
+        if self.config.get('jina', {}).get('api_key'):
+            self.jina_reranker = JinaRerankerService(self.config)
+            logger.info("Jina reranker service initialized")
+        
+        # Initialize enhanced knowledge graph (if configured)
         if self.config.get('lightrag', {}).get('working_dir'):
-            self.knowledge_graph = SecurityKnowledgeGraph(self.config)
+            self.knowledge_graph = EnhancedSecurityKnowledgeGraph(self.config)
             await self.knowledge_graph.initialize()
+            logger.info("Enhanced knowledge graph initialized")
         
-        # Initialize visualizer
-        self.visualizer = SecurityVisualizationEngine(self.config)
+        # Initialize Neo4j HTML visualizer
+        self.visualizer = Neo4jHTMLVisualizer(self.config)
         
-        logger.info("All components initialized")
+        logger.info("All enhanced components initialized")
     
     def _create_visualizations(self, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Create comprehensive visualizations"""
+        """Create comprehensive enhanced visualizations"""
         
         visualizations = {}
         
         network_entities = analysis_results.get('network_entities', {})
         summary = analysis_results.get('analysis_summary', {})
         
-        # Network topology graph
-        network_viz = self.visualizer.create_interactive_network_graph(network_entities)
-        visualizations['network_graph'] = network_viz
+        # Interactive security graph with Neo4j integration
+        security_graph = self.visualizer.create_interactive_security_graph(network_entities)
+        visualizations['security_graph'] = security_graph
         
-        # Security dashboard
-        security_dashboard = self.visualizer.create_security_dashboard(network_entities, summary)
-        visualizations['security_dashboard'] = security_dashboard
+        # Enhanced threat analysis dashboard
+        threat_dashboard = self.visualizer.create_enhanced_threat_dashboard(network_entities, summary)
+        visualizations['threat_dashboard'] = threat_dashboard
         
-        # Threat heatmap
+        # Attack correlation network
         security_events = network_entities.get('security_events', [])
-        threat_heatmap = self.visualizer.create_threat_heatmap(security_events)
-        visualizations['threat_heatmap'] = threat_heatmap
+        correlation_network = self.visualizer.create_attack_correlation_network(security_events)
+        visualizations['correlation_network'] = correlation_network
         
-        # Attack timeline
-        attack_timeline = self.visualizer.create_attack_timeline(security_events)
-        visualizations['attack_timeline'] = attack_timeline
+        # Compliance visualization
+        compliance_data = network_entities.get('compliance_assessment', {})
+        if compliance_data:
+            compliance_viz = self.visualizer.create_compliance_visualization(compliance_data)
+            visualizations['compliance_visualization'] = compliance_viz
         
-        logger.info("Visualizations created")
+        # Timeline with enhanced context
+        enhanced_timeline = self.visualizer.create_enhanced_attack_timeline(security_events)
+        visualizations['enhanced_timeline'] = enhanced_timeline
+        
+        logger.info("Enhanced visualizations created")
         return visualizations
     
     async def _export_results(self, analysis_results: Dict[str, Any], output_dir: str) -> Dict[str, str]:
@@ -448,17 +479,20 @@ This analysis employed the following advanced techniques:
         return report
     
     async def query_knowledge_graph(self, query: str, mode: str = "hybrid") -> Dict[str, Any]:
-        """Query the knowledge graph"""
+        """Query the enhanced knowledge graph with Jina reranking"""
         
         if not self.knowledge_graph:
-            return {'error': 'Knowledge graph not initialized'}
+            return {'error': 'Enhanced knowledge graph not initialized'}
         
         try:
-            result = await self.knowledge_graph.query_security_knowledge(query, mode)
+            # Use enhanced query with Jina reranking if available
+            result = await self.knowledge_graph.query_enhanced_security_knowledge(
+                query, mode, self.jina_reranker
+            )
             return result
             
         except Exception as e:
-            logger.error(f"Knowledge graph query failed: {e}")
+            logger.error(f"Enhanced knowledge graph query failed: {e}")
             return {'error': str(e)}
     
     def run_web_interface(self, host: str = None, port: int = None):
@@ -492,6 +526,7 @@ def setup_environment():
     
     # Check required environment variables
     required_env_vars = ['OPENAI_API_KEY']
+    optional_env_vars = ['NEO4J_PASSWORD', 'JINA_API_KEY', 'NEO4J_URI', 'NEO4J_USERNAME']
     missing_vars = []
     
     for var in required_env_vars:
@@ -504,6 +539,18 @@ def setup_environment():
         for var in missing_vars:
             logger.info(f"  export {var}=<your_{var.lower()}>")
         sys.exit(1)
+    
+    # Check optional environment variables and warn if missing
+    missing_optional = []
+    for var in optional_env_vars:
+        if not os.getenv(var):
+            missing_optional.append(var)
+    
+    if missing_optional:
+        logger.warning(f"Optional environment variables not set: {missing_optional}")
+        logger.info("Some enhanced features may not be available. Consider setting:")
+        for var in missing_optional:
+            logger.info(f"  export {var}=<your_{var.lower()}>")
     
     logger.info("Environment setup complete")
 
